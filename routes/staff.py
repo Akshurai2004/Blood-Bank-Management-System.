@@ -44,4 +44,3 @@ async def deactivate_staff(staff_id: int):
     result = StaffService.deactivate_staff(staff_id)
     return SuccessResponse(message="Staff deactivated successfully", data=result)
 
-a
