@@ -87,38 +87,6 @@ const BloodBankManagement = () => {
     return data;
   };
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    const loadAllData = async () => {
-      try {
-        await Promise.all([
-          fetchDonors(),
-          fetchBloodBanks(),
-          fetchHospitals(),
-          fetchPatients(),
-          fetchInventory(),
-          fetchRequests(),
-          fetchStatistics(),
-          fetchBloodUnits(),
-          fetchAllocations()
-        ]);
-      } catch (error) {
-        console.error('Error during bulk fetch:', error);
-      }
-    };
-
-    loadAllData();
-    // Remove auto-refresh interval to prevent input field focus loss
-    // const interval = setInterval(loadAllData, 5000); // Refresh every 5 seconds
-    // return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => () => {
-    if (messageTimerRef.current) {
-      clearTimeout(messageTimerRef.current);
-    }
-  }, []);
-
   async function fetchDonors() {
     try {
       const data = await request('/donors');
@@ -199,6 +167,38 @@ const BloodBankManagement = () => {
       console.error('Error fetching statistics:', e);
     }
   }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const loadAllData = async () => {
+      try {
+        await Promise.all([
+          fetchDonors(),
+          fetchBloodBanks(),
+          fetchHospitals(),
+          fetchPatients(),
+          fetchInventory(),
+          fetchRequests(),
+          fetchStatistics(),
+          fetchBloodUnits(),
+          fetchAllocations()
+        ]);
+      } catch (error) {
+        console.error('Error during bulk fetch:', error);
+      }
+    };
+
+    loadAllData();
+    // Remove auto-refresh interval to prevent input field focus loss
+    // const interval = setInterval(loadAllData, 5000); // Refresh every 5 seconds
+    // return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => () => {
+    if (messageTimerRef.current) {
+      clearTimeout(messageTimerRef.current);
+    }
+  }, []);
 
   // Form Handlers
   async function handleAddDonor(e) {

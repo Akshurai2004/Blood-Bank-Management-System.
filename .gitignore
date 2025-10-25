@@ -1,0 +1,59 @@
+.venv/
+env/
+ENV/
+venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor directories and files
+.vscode/
+.idea/
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/build/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables / secrets
+.env
+.env.*
+
+# MySQL socket / runtime
+*.sqlite3
+
+# Misc
+*.pyc
+*.pyo
+*.pyd
+
+# Local config
+*.local
+
+# Python version managers
+.python-version
+

@@ -1,61 +1,100 @@
-
 ## 🩸 Blood Bank Management System
-### 1️⃣ Setup Database
-````markdown
 
-A full-stack Blood Bank Management System using **FastAPI**, **React**, and **MySQL**.
+A simple full-stack app using FastAPI (backend), React (frontend) and MySQL (database).
 
 ---
-### ⚙️ Setup Instructions
 
+## Prerequisites
 
+- Python 3.10+ with a virtual environment (recommended)
+- Node.js and npm
+- MySQL server (import the provided SQL file)
 
-Import the provided SQL file to initialize your database and tables:
+---
+
+## 1. Initialize the database
+
+Import the provided SQL to create the schema and seed data:
 
 ```bash
 mysql -u root -p < database/blood_bank_management.sql
-````
+```
 
 ---
 
-### 2️⃣ Setup Backend
+## 2. Backend
 
-Navigate to the backend directory and install dependencies:
+Install backend dependencies and set your DB credentials:
 
-```bash
+```powershell
 cd backend
 pip install -r requirements.txt
 ```
 
-Edit `blood_bank_fastapi.py` with your MySQL credentials.
+Edit `backend/blood_bank_fastapi.py` and set your MySQL password in DB_CONFIG or export the `DB_PASSWORD` environment variable before running. Example (PowerShell):
 
-Start the FastAPI backend server:
+```powershell
+$env:DB_PASSWORD = 'your_mysql_password'
+```
 
-```bash
-python blood_bank_fastapi.py &
+To run the backend by itself:
+
+```powershell
+# (use your venv python if desired)
+python -m uvicorn backend.blood_bank_fastapi:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 ---
 
-### 3️⃣ Setup Frontend
+## 3. Frontend
 
-Open a terminal, navigate to the frontend folder, install dependencies, and start the React app:
+Install and run the React app:
 
 ```bash
-cd ../frontend
+cd frontend
 npm install
 npm start
 ```
 
-The app runs at [http://localhost:3000](http://localhost:3000).
+The frontend runs at http://localhost:3000 and proxies API calls to http://localhost:8000 by default.
 
 ---
 
-## 🧩 Tech Stack
+## 4. Recommended: Run both with the launcher
 
-* **Frontend:** React.js
-* **Backend:** FastAPI
-* **Database:** MySQL
+Use the included `main.py` (project root) to start backend first, wait for the health check, then start the frontend so the React proxy won't fail:
+
+```powershell
+# Optional: activate your venv so the correct Python is used
+# .\env\Scripts\Activate.ps1
+
+python .\main.py
+```
+
+The launcher streams both processes' logs and exits if the backend fails to become healthy within 30 seconds.
+
+---
+
+## Troubleshooting
+
+- Proxy ECONNREFUSED: means the frontend couldn't reach the backend. Use `python .\main.py` or start the backend before the frontend.
+- npm not found: make sure Node.js/npm are installed and on PATH. Check with:
+
+```powershell
+where.exe npm
+npm --version
+node --version
+```
+- Port conflict: if port 8000 is in use, start the backend on another port and update `frontend/package.json`'s `proxy` accordingly.
+
+---
+
+## Tech stack
+
+- Frontend: React
+- Backend: FastAPI
+- Database: MySQL
+
 
 ```
 ```

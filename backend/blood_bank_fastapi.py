@@ -7,8 +7,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 
-# Import your database class
-from blood_bank_backend import BloodBankDB
+# Import your database class (use package-relative import since this module is
+# intended to be loaded as `backend.blood_bank_fastapi`)
+from .blood_bank_backend import BloodBankDB
 
 # Shared literals for validation
 BloodGroupLiteral = Literal['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']
@@ -19,7 +20,7 @@ RequestStatusLiteral = Literal['Pending', 'Fulfilled', 'Denied']
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "localhost"),
     "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_PASSWORD", "yourpassword"),
+    "password": os.getenv("DB_PASSWORD", "akshat@MySQL"),
     "database": os.getenv("DB_NAME", "BloodBankDB"),
 }
 db = BloodBankDB(**DB_CONFIG)
