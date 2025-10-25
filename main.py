@@ -17,7 +17,7 @@ from routes import (
 )
 
 # Import exception handlers
-from utils.exceptions import BloodBankException
+#from utils.exceptions import BloodBankException
 
 load_dotenv()
 
@@ -62,7 +62,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+'''
 # Exception handler for custom exceptions
 @app.exception_handler(BloodBankException)
 async def blood_bank_exception_handler(request: Request, exc: BloodBankException):
@@ -73,7 +73,7 @@ async def blood_bank_exception_handler(request: Request, exc: BloodBankException
             "error": exc.detail
         }
     )
-
+'''
 
 # Global exception handler
 @app.exception_handler(Exception)
