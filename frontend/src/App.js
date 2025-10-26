@@ -33,16 +33,16 @@ const BloodBankManagement = () => {
     name: '', age: '', gender: 'M', blood_group: 'A+', hospital_id: '', contact: '', condition: ''
   });
   const [requestForm, setRequestForm] = useState({
-    patient_id: '', blood_bank_id: '', required_units: '1'
+    patient_id: '', blood_bank_id: '', required_units: ''
   });
   const [donationForm, setDonationForm] = useState({
-    donor_id: '', blood_bank_id: '', component: 'Whole Blood', quantity: '1'
+    donor_id: '', blood_bank_id: '', component: 'Whole Blood', quantity: ''
   });
   const [hospitalForm, setHospitalForm] = useState({
     name: '', location: '', contact: '', email: ''
   });
   const [bloodBankForm, setBloodBankForm] = useState({
-    name: '', location: '', contact: '', capacity: '1000'
+    name: '', location: '', contact: '', capacity: ''
   });
   const [allocationForm, setAllocationForm] = useState({
     request_id: '', unit_id: ''
@@ -676,7 +676,7 @@ const BloodBankManagement = () => {
     );
   }, [donorForm, donors, loading, handleAddDonor, showMessage, genders, bloodGroups, messageTimerRef]);
 
-  function PatientsView() {
+  const PatientsView = useMemo(() => {
     return (
       <div className="patients-container">
         <h2 className="section-title">Manage Patients</h2>
@@ -699,6 +699,10 @@ const BloodBankManagement = () => {
                 placeholder="Age *"
                 min="1"
                 value={patientForm.age}
+                onInput={e => {
+                  // Only allow numeric values
+                  e.target.value = e.target.value.replace(/[^0-9]/g, '');
+                }}
                 onChange={e => setPatientForm(prev => ({...prev, age: e.target.value}))}
                 required
               />
@@ -725,10 +729,18 @@ const BloodBankManagement = () => {
               <input
                 autoComplete="off"
                 type="tel"
-                placeholder="Contact Number *"
+                placeholder="Contact Number (10 digits) *"
                 value={patientForm.contact}
-                onChange={e => setPatientForm(prev => ({...prev, contact: e.target.value}))}
+                onChange={e => {
+                  const value = e.target.value.replace(/\D/g, ''); // Remove non-digits
+                  if (value.length <= 10) {
+                    setPatientForm(prev => ({...prev, contact: value}));
+                  }
+                }}
+                pattern="[0-9]{10}"
+                maxLength="10"
                 required
+                title="Please enter exactly 10 digits"
               />
             </div>
             <textarea
@@ -781,7 +793,7 @@ const BloodBankManagement = () => {
         </div>
       </div>
     );
-  }
+  }, [patientForm, patients, loading, handleAddPatient, genders, bloodGroups, hospitals]);
 
   function RequestsView() {
     return (
@@ -1180,7 +1192,7 @@ const BloodBankManagement = () => {
       <div className="container">
         {activeTab === 'dashboard' && <DashboardView />}
         {activeTab === 'donors' && DonorsView}
-        {activeTab === 'patients' && <PatientsView />}
+        {activeTab === 'patients' && PatientsView}
         {activeTab === 'requests' && <RequestsView />}
         {activeTab === 'management' && <ManagementView />}
       </div>
