@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Heart, Users, Building2, Droplet, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
 
 const ENV_API_BASE = (process.env.REACT_APP_API_URL || '').trim().replace(/\/$/, '');
@@ -203,6 +203,32 @@ const BloodBankManagement = () => {
   // Form Handlers
   async function handleAddDonor(e) {
     e.preventDefault();
+    
+    // Validation checks
+    const age = parseInt(donorForm.age, 10);
+    if (age < 18 || age > 65) {
+      showMessage('Age must be between 18 and 65. People outside this age range are not allowed to donate blood.', 'error');
+      return;
+    }
+    
+    if (donorForm.contact.length !== 10) {
+      showMessage('Contact number must be exactly 10 digits.', 'error');
+      return;
+    }
+    
+    if (!/^\d{10}$/.test(donorForm.contact)) {
+      showMessage('Contact number must contain only digits.', 'error');
+      return;
+    }
+    
+    if (donorForm.email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(donorForm.email)) {
+        showMessage('Please enter a valid email address.', 'error');
+        return;
+      }
+    }
+    
     setLoading(true);
     try {
       const data = await request('/donors', {
@@ -210,7 +236,7 @@ const BloodBankManagement = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: donorForm.name,
-          age: parseInt(donorForm.age, 10),
+          age: age,
           gender: donorForm.gender,
           blood_group: donorForm.blood_group,
           contact: donorForm.contact,
@@ -498,7 +524,7 @@ const BloodBankManagement = () => {
     );
   }
 
-  function DonorsView() {
+  const DonorsView = useMemo(() => {
     return (
       <div className="donors-container">
         <h2 className="section-title">Manage Donors</h2>
@@ -522,7 +548,31 @@ const BloodBankManagement = () => {
                 min="18"
                 max="65"
                 value={donorForm.age}
-                onChange={e => setDonorForm(prev => ({...prev, age: e.target.value}))}
+                onInput={e => {
+                  // Only allow numeric values
+                  e.target.value = e.target.value.replace(/[^0-9]/g, '');
+                }}
+                onChange={e => {
+                  const value = e.target.value;
+                  setDonorForm(prev => ({...prev, age: value}));
+                  const numValue = parseInt(value);
+                  if (value && (numValue < 18 || numValue > 65)) {
+                    showMessage('Age must be between 18 and 65. People outside this age range are not allowed to donate blood.', 'error');
+                  } else if (value && numValue >= 18 && numValue <= 65) {
+                    // Clear error message when valid
+                    setMessage('');
+                    setMessageType('');
+                    if (messageTimerRef.current) {
+                      clearTimeout(messageTimerRef.current);
+                    }
+                  }
+                }}
+                onBlur={e => {
+                  const value = e.target.value;
+                  if (value && (parseInt(value) < 18 || parseInt(value) > 65)) {
+                    showMessage('Age must be between 18 and 65. People outside this age range are not allowed to donate blood.', 'error');
+                  }
+                }}
                 required
               />
               <select
@@ -540,10 +590,29 @@ const BloodBankManagement = () => {
               <input
                 autoComplete="off"
                 type="tel"
-                placeholder="Contact Number *"
+                placeholder="Contact Number (10 digits) *"
                 value={donorForm.contact}
-                onChange={e => setDonorForm(prev => ({...prev, contact: e.target.value}))}
+                onChange={e => {
+                  const value = e.target.value.replace(/\D/g, ''); // Remove non-digits
+                  if (value.length <= 10) {
+                    setDonorForm(prev => ({...prev, contact: value}));
+                    // Clear error message when valid (exactly 10 digits or still typing)
+                    if (value.length === 10 || value.length < 10) {
+                      setMessage('');
+                      setMessageType('');
+                      if (messageTimerRef.current) {
+                        clearTimeout(messageTimerRef.current);
+                      }
+                    }
+                  }
+                  if (value.length > 10) {
+                    showMessage('Contact number must be exactly 10 digits.', 'error');
+                  }
+                }}
+                pattern="[0-9]{10}"
+                maxLength="10"
                 required
+                title="Please enter exactly 10 digits"
               />
               <input
                 autoComplete="off"
@@ -551,6 +620,8 @@ const BloodBankManagement = () => {
                 placeholder="Email"
                 value={donorForm.email}
                 onChange={e => setDonorForm(prev => ({...prev, email: e.target.value}))}
+                pattern="[^\s@]+@[^\s@]+\.[^\s@]+"
+                title="Please enter a valid email address (e.g., example@domain.com)"
               />
             </div>
             <textarea
@@ -603,7 +674,7 @@ const BloodBankManagement = () => {
         </div>
       </div>
     );
-  }
+  }, [donorForm, donors, loading, handleAddDonor, showMessage, genders, bloodGroups, messageTimerRef]);
 
   function PatientsView() {
     return (
@@ -1108,7 +1179,7 @@ const BloodBankManagement = () => {
 
       <div className="container">
         {activeTab === 'dashboard' && <DashboardView />}
-        {activeTab === 'donors' && <DonorsView />}
+        {activeTab === 'donors' && DonorsView}
         {activeTab === 'patients' && <PatientsView />}
         {activeTab === 'requests' && <RequestsView />}
         {activeTab === 'management' && <ManagementView />}
