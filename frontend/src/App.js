@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Heart, Users, Building2, Droplet, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
-
+import { Heart, Users, Building2, Droplet, AlertCircle, CheckCircle, XCircle } from 'lucide-react'
 const ENV_API_BASE = (process.env.REACT_APP_API_URL || '').trim().replace(/\/$/, '');
 const DEFAULT_API_BASE = 'http://localhost:8000/api';
 
@@ -9,7 +8,36 @@ const buildApiUrl = (path) => {
   return `${base}${path}`;
 };
 
+
+
 const BloodBankManagement = () => {
+  // Donor search state and handler
+  const [donorSearch, setDonorSearch] = useState('');
+  const [donorSearchResult, setDonorSearchResult] = useState(null); // stores the matched donor's ID
+  const [donorSearchMessage, setDonorSearchMessage] = useState('');
+  function handleDonorSearch(e) {
+    const value = e.target.value;
+    setDonorSearch(value);
+    setDonorSearchMessage('');
+    if (!value.trim()) {
+      setDonorSearchResult(null);
+      return;
+    }
+    // Search by ID (number), name (case-insensitive), or blood group (case-insensitive)
+    const lower = value.trim().toLowerCase();
+    let found = null;
+    found = donors.find(d =>
+      String(d.DonorID) === value.trim() ||
+      (d.DonorName && d.DonorName.toLowerCase().includes(lower)) ||
+      (d.BloodGroup && d.BloodGroup.toLowerCase() === lower)
+    );
+    if (found) {
+      setDonorSearchResult(found.DonorID);
+    } else {
+      setDonorSearchResult(null);
+      setDonorSearchMessage('No donor found matching your search criteria.');
+    }
+  }
   const [activeTab, setActiveTab] = useState('dashboard');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -29,6 +57,119 @@ const BloodBankManagement = () => {
   const [donorForm, setDonorForm] = useState({
     name: '', age: '', gender: 'M', blood_group: 'A+', contact: '', email: '', address: ''
   });
+  // For editing donor
+  const [editDonorId, setEditDonorId] = useState(null);
+  const [editDonorForm, setEditDonorForm] = useState({
+    name: '', age: '', gender: 'M', blood_group: 'A+', contact: '', email: '', address: ''
+  });
+  const [showEditModal, setShowEditModal] = useState(false);
+  // For delete confirmation
+  const [deleteDonorId, setDeleteDonorId] = useState(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  // Edit Donor Handlers
+  function openEditDonorModal(donor) {
+    setEditDonorId(donor.DonorID);
+    setEditDonorForm({
+      name: donor.DonorName || '',
+      age: donor.Age ? String(donor.Age) : '',
+      gender: donor.Gender || 'M',
+      blood_group: donor.BloodGroup || 'A+',
+      contact: donor.ContactNo || '',
+      email: donor.Email || '',
+      address: donor.Address || ''
+    });
+    setShowEditModal(true);
+  }
+
+  function closeEditDonorModal() {
+    setShowEditModal(false);
+    setEditDonorId(null);
+  }
+
+  async function handleEditDonorSubmit(e) {
+    e.preventDefault();
+    const age = parseInt(editDonorForm.age, 10);
+    if (age < 18 || age > 65) {
+      showMessage('Age must be between 18 and 65.', 'error');
+      return;
+    }
+    if (editDonorForm.contact.length !== 10) {
+      showMessage('Contact number must be exactly 10 digits.', 'error');
+      return;
+    }
+    if (!/^\d{10}$/.test(editDonorForm.contact)) {
+      showMessage('Contact number must contain only digits.', 'error');
+      return;
+    }
+    if (editDonorForm.email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(editDonorForm.email)) {
+        showMessage('Please enter a valid email address.', 'error');
+        return;
+      }
+    }
+    setLoading(true);
+    try {
+      const data = await request(`/donors/${editDonorId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editDonorForm.name,
+          age: age,
+          gender: editDonorForm.gender,
+          blood_group: editDonorForm.blood_group,
+          contact: editDonorForm.contact,
+          email: editDonorForm.email,
+          address: editDonorForm.address
+        })
+      });
+      if (data.success) {
+        showMessage('Donor updated successfully!', 'success');
+        closeEditDonorModal();
+        fetchDonors();
+        fetchStatistics();
+      } else {
+        showMessage(data.detail || 'Error updating donor', 'error');
+      }
+    } catch (e) {
+      handleApiError(e, 'Error updating donor');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Delete Donor Handlers
+  function openDeleteDonorModal(donorId) {
+    setDeleteDonorId(donorId);
+    setShowDeleteModal(true);
+  }
+
+  function closeDeleteDonorModal() {
+    setShowDeleteModal(false);
+    setDeleteDonorId(null);
+  }
+
+  async function handleDeleteDonor() {
+    setLoading(true);
+    try {
+      const data = await request(`/donors/${deleteDonorId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (data.success) {
+        showMessage('Donor deleted successfully!', 'success');
+        closeDeleteDonorModal();
+        fetchDonors();
+        fetchStatistics();
+      } else {
+        showMessage(data.detail || 'Error deleting donor', 'error');
+      }
+    } catch (e) {
+      handleApiError(e, 'Error deleting donor');
+    } finally {
+      setLoading(false);
+    }
+  }
   const [patientForm, setPatientForm] = useState({
     name: '', age: '', gender: 'M', blood_group: 'A+', hospital_id: '', contact: '', condition: ''
   });
@@ -529,6 +670,21 @@ const BloodBankManagement = () => {
       <div className="donors-container">
         <h2 className="section-title">Manage Donors</h2>
 
+        {/* Donor Search Box */}
+        <div style={{ marginBottom: '18px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <input
+            type="text"
+            placeholder="Search donor by ID, name, or blood group..."
+            value={donorSearch}
+            onChange={handleDonorSearch}
+            style={{ padding: '8px 12px', borderRadius: '5px', border: '1px solid #d1d5db', minWidth: '260px' }}
+          />
+          {donorSearchMessage && (
+            <span style={{ color: '#991b1b', fontSize: '0.98rem', marginLeft: '8px' }}>{donorSearchMessage}</span>
+          )}
+        </div>
+
+        {/* Add Donor Form */}
         <div className="card">
           <h3 className="section-title" style={{ marginTop: 0 }}>Add New Donor</h3>
           <form onSubmit={handleAddDonor}>
@@ -549,7 +705,6 @@ const BloodBankManagement = () => {
                 max="65"
                 value={donorForm.age}
                 onInput={e => {
-                  // Only allow numeric values
                   e.target.value = e.target.value.replace(/[^0-9]/g, '');
                 }}
                 onChange={e => {
@@ -559,7 +714,6 @@ const BloodBankManagement = () => {
                   if (value && (numValue < 18 || numValue > 65)) {
                     showMessage('Age must be between 18 and 65. People outside this age range are not allowed to donate blood.', 'error');
                   } else if (value && numValue >= 18 && numValue <= 65) {
-                    // Clear error message when valid
                     setMessage('');
                     setMessageType('');
                     if (messageTimerRef.current) {
@@ -593,10 +747,9 @@ const BloodBankManagement = () => {
                 placeholder="Contact Number (10 digits) *"
                 value={donorForm.contact}
                 onChange={e => {
-                  const value = e.target.value.replace(/\D/g, ''); // Remove non-digits
+                  const value = e.target.value.replace(/\D/g, '');
                   if (value.length <= 10) {
                     setDonorForm(prev => ({...prev, contact: value}));
-                    // Clear error message when valid (exactly 10 digits or still typing)
                     if (value.length === 10 || value.length < 10) {
                       setMessage('');
                       setMessageType('');
@@ -637,6 +790,103 @@ const BloodBankManagement = () => {
           </form>
         </div>
 
+        {/* Edit Donor Modal */}
+        {showEditModal && (
+          <div className="modal-overlay" style={{ position: 'fixed', top:0, left:0, width:'100vw', height:'100vh', background:'rgba(0,0,0,0.3)', zIndex:2000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <div className="modal-content" style={{ background:'#fff', borderRadius:'8px', padding:'30px', minWidth:'350px', maxWidth:'95vw', boxShadow:'0 4px 24px rgba(0,0,0,0.18)' }}>
+              <h3 className="section-title">Edit Donor</h3>
+              <form onSubmit={handleEditDonorSubmit}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
+                  <input
+                    autoComplete="off"
+                    type="text"
+                    placeholder="Full Name *"
+                    value={editDonorForm.name}
+                    onChange={e => setEditDonorForm(prev => ({...prev, name: e.target.value}))}
+                    required
+                  />
+                  <input
+                    autoComplete="off"
+                    type="number"
+                    placeholder="Age (18-65) *"
+                    min="18"
+                    max="65"
+                    value={editDonorForm.age}
+                    onInput={e => {
+                      e.target.value = e.target.value.replace(/[^0-9]/g, '');
+                    }}
+                    onChange={e => setEditDonorForm(prev => ({...prev, age: e.target.value}))}
+                    required
+                  />
+                  <select
+                    value={editDonorForm.gender}
+                    onChange={e => setEditDonorForm(prev => ({...prev, gender: e.target.value}))}
+                  >
+                    {genders.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                  <select
+                    value={editDonorForm.blood_group}
+                    onChange={e => setEditDonorForm(prev => ({...prev, blood_group: e.target.value}))}
+                  >
+                    {bloodGroups.map(bg => <option key={bg} value={bg}>{bg}</option>)}
+                  </select>
+                  <input
+                    autoComplete="off"
+                    type="tel"
+                    placeholder="Contact Number (10 digits) *"
+                    value={editDonorForm.contact}
+                    onChange={e => {
+                      const value = e.target.value.replace(/\D/g, '');
+                      if (value.length <= 10) {
+                        setEditDonorForm(prev => ({...prev, contact: value}));
+                      }
+                    }}
+                    pattern="[0-9]{10}"
+                    maxLength="10"
+                    required
+                    title="Please enter exactly 10 digits"
+                  />
+                  <input
+                    autoComplete="off"
+                    type="email"
+                    placeholder="Email"
+                    value={editDonorForm.email}
+                    onChange={e => setEditDonorForm(prev => ({...prev, email: e.target.value}))}
+                    pattern="[^\s@]+@[^\s@]+\.[^\s@]+"
+                    title="Please enter a valid email address (e.g., example@domain.com)"
+                  />
+                </div>
+                <textarea
+                  autoComplete="off"
+                  placeholder="Address"
+                  value={editDonorForm.address}
+                  onChange={e => setEditDonorForm(prev => ({...prev, address: e.target.value}))}
+                  style={{ marginTop: '10px' }}
+                />
+                <div style={{ marginTop: '15px', display:'flex', gap:'10px' }}>
+                  <button type="submit" className="button" disabled={loading}>{loading ? 'Saving...' : 'Save Changes'}</button>
+                  <button type="button" className="button" style={{ background:'#e5e7eb', color:'#111' }} onClick={closeEditDonorModal}>Cancel</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Delete Donor Modal */}
+        {showDeleteModal && (
+          <div className="modal-overlay" style={{ position: 'fixed', top:0, left:0, width:'100vw', height:'100vh', background:'rgba(0,0,0,0.3)', zIndex:2000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <div className="modal-content" style={{ background:'#fff', borderRadius:'8px', padding:'30px', minWidth:'320px', maxWidth:'95vw', boxShadow:'0 4px 24px rgba(0,0,0,0.18)' }}>
+              <h3 className="section-title">Delete Donor</h3>
+              <p>Are you sure you want to delete this donor? This action cannot be undone.</p>
+              <div style={{ marginTop: '20px', display:'flex', gap:'10px' }}>
+                <button className="button" style={{ background:'#ef4444' }} onClick={handleDeleteDonor} disabled={loading}>{loading ? 'Deleting...' : 'Delete'}</button>
+                <button className="button" style={{ background:'#e5e7eb', color:'#111' }} onClick={closeDeleteDonorModal}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Donors List Table */}
         <div className="card">
           <h3 className="section-title" style={{ marginTop: 0 }}>Donors List</h3>
           <div className="table-container">
@@ -651,20 +901,28 @@ const BloodBankManagement = () => {
                     <th>Contact</th>
                     <th>Total Donations</th>
                     <th>Last Donation</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {donors.map(donor => (
-                    <tr key={donor.DonorID}>
-                      <td>{donor.DonorID}</td>
-                      <td>{donor.DonorName}</td>
-                      <td>{donor.Age}</td>
-                      <td><strong>{donor.BloodGroup}</strong></td>
-                      <td>{donor.ContactNo}</td>
-                      <td>{donor.TotalDonations}</td>
-                      <td>{donor.LastDonationDate || 'Never'}</td>
-                    </tr>
-                  ))}
+                  {donors.map(donor => {
+                    const isHighlighted = donorSearchResult === donor.DonorID;
+                    return (
+                      <tr key={donor.DonorID} style={isHighlighted ? { background: '#fef9c3', fontWeight: 600 } : {}}>
+                        <td>{donor.DonorID}</td>
+                        <td>{donor.DonorName}</td>
+                        <td>{donor.Age}</td>
+                        <td><strong>{donor.BloodGroup}</strong></td>
+                        <td>{donor.ContactNo}</td>
+                        <td>{donor.TotalDonations}</td>
+                        <td>{donor.LastDonationDate || 'Never'}</td>
+                        <td>
+                          <button className="button" style={{ padding:'4px 10px', fontSize:'0.9rem', marginRight:'6px' }} onClick={() => openEditDonorModal(donor)} disabled={loading}>Edit</button>
+                          <button className="button" style={{ padding:'4px 10px', fontSize:'0.9rem', background:'#ef4444' }} onClick={() => openDeleteDonorModal(donor.DonorID)} disabled={loading}>Delete</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             ) : (
@@ -674,7 +932,7 @@ const BloodBankManagement = () => {
         </div>
       </div>
     );
-  }, [donorForm, donors, loading, handleAddDonor, showMessage, genders, bloodGroups, messageTimerRef]);
+  }, [donorForm, donors, loading, handleAddDonor, showMessage, genders, bloodGroups, messageTimerRef, showEditModal, editDonorForm, showDeleteModal]);
 
   const PatientsView = useMemo(() => {
     return (

@@ -127,6 +127,13 @@ async def get_all_donors():
     donors = db.get_all_donors()
     return {"success": True, "data": donors, "count": len(donors)}
 
+@app.delete("/api/donors/{donor_id}")
+async def delete_donor(donor_id: int):
+    # Soft delete: set IsActive = FALSE
+    success = db.update_donor(donor_id, IsActive=False)
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to delete donor")
+    return {"success": True, "message": "Donor deleted successfully"}
 
 @app.get("/api/donors/{donor_id}")
 async def get_donor(donor_id: int):
