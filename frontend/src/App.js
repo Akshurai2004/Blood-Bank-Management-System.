@@ -114,7 +114,33 @@ const BloodBankManagement = () => {
       if (data.success) {
         showMessage('Patient updated successfully!', 'success');
         closeEditPatientModal();
-        fetchPatients();
+
+        // Optimistically update local patients state so the table reflects the
+        // edited values immediately (useful if the backend response doesn't
+        // return the full updated row). We'll still refresh from server for
+        // consistency.
+        const hospitalId = parseInt(editPatientForm.hospital_id, 10) || null;
+        const hospital = hospitals.find(h => Number(h.HospitalID) === hospitalId);
+
+        setPatients(prev => prev.map(p => {
+          if (p.PatientID === editPatientId) {
+            return {
+              ...p,
+              PatientName: editPatientForm.name,
+              Age: Number(editPatientForm.age) || p.Age,
+              Gender: editPatientForm.gender,
+              BloodGroupRequired: editPatientForm.blood_group,
+              HospitalID: hospitalId,
+              HospitalName: hospital ? hospital.HospitalName : p.HospitalName,
+              ContactNo: editPatientForm.contact,
+              MedicalCondition: editPatientForm.condition
+            };
+          }
+          return p;
+        }));
+
+        // Refresh from server to ensure canonical state (await so UI shows updated data immediately)
+        await fetchPatients();
       } else {
         showMessage(data.detail || 'Error updating patient', 'error');
       }
@@ -542,7 +568,8 @@ const BloodBankManagement = () => {
       if (data.success) {
         showMessage('Hospital added successfully!', 'success');
         setHospitalForm({ name: '', location: '', contact: '', email: '' });
-        fetchHospitals();
+        // Refresh hospitals immediately so new hospital shows up in selects
+        await fetchHospitals();
       } else {
         showMessage(data.detail || 'Error adding hospital', 'error');
       }
@@ -670,11 +697,22 @@ const BloodBankManagement = () => {
         })
       });
       if (data.success) {
+        // Helpful debug info for tracing; remove or lower verbosity in production
+        console.debug('PUT /requests payload:', {
+          patient_id: parseInt(editRequestForm.patient_id, 10),
+          blood_bank_id: parseInt(editRequestForm.blood_bank_id, 10),
+          required_units: parseInt(editRequestForm.required_units, 10)
+        });
+        console.debug('PUT /requests response:', data);
+
+        // Ensure the UI is refreshed from the server before closing modal so
+        // the updated request shows immediately in the table and in any
+        // dependent selects (e.g. Management -> pending requests list).
+        await fetchRequests();
+
         showMessage('Request updated successfully!', 'success');
         closeEditRequestModal();
-        fetchRequests();
-        // After editing a request, switch to Management so staff can allocate units
-        setActiveTab('management');
+        // Do not switch tabs automatically after editing a request — keep user where they are
       } else {
         showMessage(data.detail || 'Error updating request', 'error');
       }
