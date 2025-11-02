@@ -97,6 +97,12 @@ class RequestCreate(BaseModel):
     required_units: int = Field(default=1, ge=1)
 
 
+class RequestUpdate(BaseModel):
+    patient_id: Optional[int] = None
+    blood_bank_id: Optional[int] = None
+    required_units: Optional[int] = None
+
+
 class DonationRecord(BaseModel):
     donor_id: int = Field(gt=0)
     blood_bank_id: int = Field(gt=0)
@@ -112,7 +118,15 @@ class AllocationCreate(BaseModel):
 class RequestStatusUpdate(BaseModel):
     status: RequestStatusLiteral
 
-
+class PatientUpdate(BaseModel):
+    PatientName: Optional[str] = None
+    Age: Optional[int] = None
+    Gender: Optional[GenderLiteral] = None
+    BloodGroupRequired: Optional[BloodGroupLiteral] = None
+    HospitalID: Optional[int] = None
+    ContactNo: Optional[str] = None
+    MedicalCondition: Optional[str] = None
+    IsActive: Optional[bool] = None
 # Health check endpoint
 @app.get("/")
 async def root():
@@ -262,6 +276,43 @@ async def get_all_patients():
     patients = db.get_all_patients()
     return {"success": True, "data": patients, "count": len(patients)}
 
+class PatientUpdate(BaseModel):
+    PatientName: Optional[str] = None
+    Age: Optional[int] = None
+    Gender: Optional[GenderLiteral] = None
+    BloodGroupRequired: Optional[BloodGroupLiteral] = None
+    HospitalID: Optional[int] = None
+    ContactNo: Optional[str] = None
+    MedicalCondition: Optional[str] = None
+    IsActive: Optional[bool] = None
+# Update patient endpoint
+@app.put("/api/patients/{patient_id}")
+async def update_patient(patient_id: int, patient: PatientUpdate):
+    update_data = {k: v for k, v in patient.dict().items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No data to update")
+    success = db.update_patient(patient_id, **update_data)
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to update patient")
+    return {"success": True, "message": "Patient updated successfully"}
+
+# Delete patient endpoint (soft delete)
+@app.delete("/api/patients/{patient_id}")
+async def delete_patient(patient_id: int):
+    # Try soft-delete first (set IsActive = FALSE). If the database schema
+    # doesn't include the IsActive column (older DB), update_patient will
+    # return False — in that case attempt a hard delete as a fallback.
+    success = db.update_patient(patient_id, IsActive=False)
+    if success:
+        return {"success": True, "message": "Patient deleted successfully"}
+
+    # Soft-delete failed; attempt hard delete as a fallback.
+    hard_delete = db.execute_query("DELETE FROM Patient WHERE PatientID = %s", (patient_id,))
+    if hard_delete:
+        return {"success": True, "message": "Patient deleted successfully (hard delete)"}
+
+    # Both attempts failed.
+    raise HTTPException(status_code=400, detail="Failed to delete patient")
 
 @app.post("/api/patients")
 async def create_patient(patient: PatientCreate):
@@ -298,6 +349,44 @@ async def create_request(request: RequestCreate):
     if not request_id:
         raise HTTPException(status_code=400, detail="Failed to create request")
     return {"success": True, "message": "Request created successfully", "request_id": request_id}
+
+
+@app.put("/api/requests/{request_id}")
+async def update_request(request_id: int, request: RequestUpdate):
+    update_data = {k: v for k, v in request.dict().items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No data to update")
+
+    # Server-side validation: ensure provided patient and blood bank exist
+    if 'patient_id' in update_data:
+        patient = db.get_patient_by_id(update_data['patient_id'])
+        if not patient:
+            raise HTTPException(status_code=404, detail="Patient not found")
+
+    if 'blood_bank_id' in update_data:
+        bank = db.get_blood_bank_by_id(update_data['blood_bank_id'])
+        if not bank:
+            raise HTTPException(status_code=404, detail="Blood bank not found")
+
+    # Map payload keys to DB method parameters and call the DB update
+    success = db.update_request(
+        request_id,
+        patient_id=update_data.get('patient_id'),
+        blood_bank_id=update_data.get('blood_bank_id'),
+        required_units=update_data.get('required_units')
+    )
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to update request")
+    return {"success": True, "message": "Request updated successfully"}
+
+
+@app.delete("/api/requests/{request_id}")
+async def delete_request(request_id: int):
+    # Perform a soft-delete by setting the request status to 'Denied'
+    success = db.update_request_status(request_id, 'Denied')
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to deny (delete) request")
+    return {"success": True, "message": "Request denied (soft-deleted) successfully"}
 
 
 @app.put("/api/requests/{request_id}/status")

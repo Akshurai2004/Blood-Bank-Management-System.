@@ -32,6 +32,24 @@ class BloodBankDB:
             print(f"Error connecting to database: {e}")
         return False
 
+    def update_patient(self, patient_id: int, **kwargs) -> bool:
+        """Update patient information (soft delete if IsActive is set to False)"""
+        allowed_fields = ['PatientName', 'Age', 'Gender', 'BloodGroupRequired', 'HospitalID', 'ContactNo', 'MedicalCondition', 'IsActive']
+        updates = []
+        values = []
+
+        for field, value in kwargs.items():
+            if field in allowed_fields:
+                updates.append(f"{field} = %s")
+                values.append(value)
+
+        if not updates:
+            return False
+
+        values.append(patient_id)
+        query = f"UPDATE Patient SET {', '.join(updates)} WHERE PatientID = %s"
+        return self.execute_query(query, tuple(values))
+    
     def disconnect(self):
         """Close database connection"""
         if self.connection and self.connection.is_connected():
@@ -64,6 +82,26 @@ class BloodBankDB:
         finally:
             if cursor:
                 cursor.close()
+
+    def has_column(self, table: str, column: str) -> bool:
+        """Check INFORMATION_SCHEMA to see if a table has a given column.
+
+        This is used to gracefully handle databases created from older
+        schemas that may not have the `IsActive` column (or other optional
+        columns) so the code can fallback safely.
+        """
+        try:
+            query = """
+            SELECT COUNT(*) as cnt FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND COLUMN_NAME = %s
+            """
+            result = self.fetch_query(query, (self.database, table, column))
+            if not result:
+                return False
+            return int(result[0].get('cnt', 0)) > 0
+        except Exception as e:
+            print(f"Error checking column existence: {e}")
+            return False
 
     def fetch_query(self, query: str, params: tuple = None) -> List[Dict]:
         """Execute SELECT queries and return results as list of dictionaries"""
@@ -168,6 +206,12 @@ class BloodBankDB:
         """Get all blood banks"""
         query = "SELECT * FROM BloodBank ORDER BY BloodBankID"
         return self.fetch_query(query)
+
+    def get_blood_bank_by_id(self, blood_bank_id: int) -> Optional[Dict]:
+        """Get blood bank details by ID"""
+        query = "SELECT * FROM BloodBank WHERE BloodBankID = %s"
+        results = self.fetch_query(query, (blood_bank_id,))
+        return results[0] if results else None
 
     def get_available_inventory(self) -> List[Dict]:
         """Get available blood inventory from view"""
@@ -276,7 +320,23 @@ class BloodBankDB:
                 cursor.close()
 
     def get_all_patients(self) -> List[Dict]:
-        """Get all patients"""
+        """Get all patients.
+
+        If the `Patient` table contains an `IsActive` column (soft-delete
+        flag), only return active patients. If the column does not exist
+        (older schema), fall back to returning all patients.
+        """
+        if self.has_column('Patient', 'IsActive'):
+            query = """
+            SELECT p.*, h.HospitalName 
+            FROM Patient p
+            JOIN Hospital h ON p.HospitalID = h.HospitalID
+            WHERE p.IsActive = TRUE
+            ORDER BY p.PatientID DESC
+            """
+            return self.fetch_query(query)
+
+        # Fallback for older schemas without IsActive
         query = """
         SELECT p.*, h.HospitalName 
         FROM Patient p
@@ -284,6 +344,12 @@ class BloodBankDB:
         ORDER BY p.PatientID DESC
         """
         return self.fetch_query(query)
+
+    def get_patient_by_id(self, patient_id: int) -> Optional[Dict]:
+        """Get patient details by ID"""
+        query = "SELECT * FROM Patient WHERE PatientID = %s"
+        results = self.fetch_query(query, (patient_id,))
+        return results[0] if results else None
 
     # REQUEST OPERATIONS
     def create_request(self, patient_id: int, blood_bank_id: int, required_units: int = 1) -> Optional[int]:
@@ -329,6 +395,33 @@ class BloodBankDB:
         WHERE RequestID = %s
         """
         return self.execute_query(query, (status, status, request_id))
+
+    def update_request(self, request_id: int, patient_id: int = None, blood_bank_id: int = None, required_units: int = None) -> bool:
+        """Update request fields. Only provided fields will be updated."""
+        updates = []
+        values = []
+
+        if patient_id is not None:
+            updates.append("PatientID = %s")
+            values.append(patient_id)
+        if blood_bank_id is not None:
+            updates.append("BloodBankID = %s")
+            values.append(blood_bank_id)
+        if required_units is not None:
+            updates.append("RequiredUnits = %s")
+            values.append(required_units)
+
+        if not updates:
+            return False
+
+        values.append(request_id)
+        query = f"UPDATE Request SET {', '.join(updates)} WHERE RequestID = %s"
+        return self.execute_query(query, tuple(values))
+
+    def delete_request(self, request_id: int) -> bool:
+        """Delete a request record (hard delete). Returns True on success."""
+        query = "DELETE FROM Request WHERE RequestID = %s"
+        return self.execute_query(query, (request_id,))
 
     # ALLOCATION OPERATIONS
     def allocate_blood_unit(self, request_id: int, unit_id: int) -> Optional[int]:

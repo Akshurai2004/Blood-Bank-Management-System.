@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Heart, Users, Building2, Droplet, AlertCircle, CheckCircle, XCircle } from 'lucide-react'
+import { Heart, Users, Building2, Droplet, AlertCircle } from 'lucide-react'
 const ENV_API_BASE = (process.env.REACT_APP_API_URL || '').trim().replace(/\/$/, '');
 const DEFAULT_API_BASE = 'http://localhost:8000/api';
 
@@ -38,6 +38,124 @@ const BloodBankManagement = () => {
       setDonorSearchMessage('No donor found matching your search criteria.');
     }
   }
+    // Patient search state and handler
+  const [patientSearch, setPatientSearch] = useState('');
+  const [patientSearchResult, setPatientSearchResult] = useState(null); // stores the matched patient ID
+  const [patientSearchMessage, setPatientSearchMessage] = useState('');
+  function handlePatientSearch(e) {
+    const value = e.target.value;
+    setPatientSearch(value);
+    setPatientSearchMessage('');
+    if (!value.trim()) {
+      setPatientSearchResult(null);
+      return;
+    }
+    const lower = value.trim().toLowerCase();
+    let found = null;
+    found = patients.find(p =>
+      String(p.PatientID) === value.trim() ||
+      (p.PatientName && p.PatientName.toLowerCase().includes(lower)) ||
+      (p.BloodGroupRequired && p.BloodGroupRequired.toLowerCase() === lower)
+    );
+    if (found) {
+      setPatientSearchResult(found.PatientID);
+    } else {
+      setPatientSearchResult(null);
+      setPatientSearchMessage('No patient found matching your search criteria.');
+    }
+  }
+
+  // For editing patient
+  const [editPatientId, setEditPatientId] = useState(null);
+  const [editPatientForm, setEditPatientForm] = useState({
+    name: '', age: '', gender: 'M', blood_group: 'A+', hospital_id: '', contact: '', condition: ''
+  });
+  const [showEditPatientModal, setShowEditPatientModal] = useState(false);
+  // For delete confirmation
+  const [deletePatientId, setDeletePatientId] = useState(null);
+  const [showDeletePatientModal, setShowDeletePatientModal] = useState(false);
+
+  function openEditPatientModal(patient) {
+    setEditPatientId(patient.PatientID);
+    setEditPatientForm({
+      name: patient.PatientName || '',
+      age: patient.Age ? String(patient.Age) : '',
+      gender: patient.Gender || 'M',
+      blood_group: patient.BloodGroupRequired || 'A+',
+      hospital_id: patient.HospitalID ? String(patient.HospitalID) : '',
+      contact: patient.ContactNo || '',
+      condition: patient.MedicalCondition || ''
+    });
+    setShowEditPatientModal(true);
+  }
+
+  function closeEditPatientModal() {
+    setShowEditPatientModal(false);
+    setEditPatientId(null);
+  }
+
+  async function handleEditPatientSubmit(e) {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const data = await request(`/patients/${editPatientId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          PatientName: editPatientForm.name,
+          Age: parseInt(editPatientForm.age, 10),
+          Gender: editPatientForm.gender,
+          BloodGroupRequired: editPatientForm.blood_group,
+          HospitalID: parseInt(editPatientForm.hospital_id, 10),
+          ContactNo: editPatientForm.contact,
+          MedicalCondition: editPatientForm.condition
+        })
+      });
+      if (data.success) {
+        showMessage('Patient updated successfully!', 'success');
+        closeEditPatientModal();
+        fetchPatients();
+      } else {
+        showMessage(data.detail || 'Error updating patient', 'error');
+      }
+    } catch (e) {
+      handleApiError(e, 'Error updating patient');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function openDeletePatientModal(patientId) {
+    setDeletePatientId(patientId);
+    setShowDeletePatientModal(true);
+  }
+
+  function closeDeletePatientModal() {
+    setShowDeletePatientModal(false);
+    setDeletePatientId(null);
+  }
+
+  async function handleDeletePatient() {
+    setLoading(true);
+    try {
+      const data = await request(`/patients/${deletePatientId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (data.success) {
+        showMessage('Patient deleted successfully!', 'success');
+        closeDeletePatientModal();
+        fetchPatients();
+      } else {
+        showMessage(data.detail || 'Error deleting patient', 'error');
+      }
+    } catch (e) {
+      handleApiError(e, 'Error deleting patient');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const [activeTab, setActiveTab] = useState('dashboard');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -176,6 +294,13 @@ const BloodBankManagement = () => {
   const [requestForm, setRequestForm] = useState({
     patient_id: '', blood_bank_id: '', required_units: ''
   });
+  // For editing a request
+  const [editRequestId, setEditRequestId] = useState(null);
+  const [editRequestForm, setEditRequestForm] = useState({ patient_id: '', blood_bank_id: '', required_units: '' });
+  const [showEditRequestModal, setShowEditRequestModal] = useState(false);
+  // For delete confirmation of a request
+  const [deleteRequestId, setDeleteRequestId] = useState(null);
+  const [showDeleteRequestModal, setShowDeleteRequestModal] = useState(false);
   const [donationForm, setDonationForm] = useState({
     donor_id: '', blood_bank_id: '', component: 'Whole Blood', quantity: ''
   });
@@ -516,6 +641,81 @@ const BloodBankManagement = () => {
     }
   }
 
+  function openEditRequestModal(req) {
+    setEditRequestId(req.RequestID);
+    setEditRequestForm({
+      patient_id: req.PatientID ? String(req.PatientID) : '',
+      blood_bank_id: req.BloodBankID ? String(req.BloodBankID) : '',
+      required_units: req.RequiredUnits ? String(req.RequiredUnits) : ''
+    });
+    setShowEditRequestModal(true);
+  }
+
+  function closeEditRequestModal() {
+    setShowEditRequestModal(false);
+    setEditRequestId(null);
+  }
+
+  async function handleEditRequestSubmit(e) {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const data = await request(`/requests/${editRequestId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patient_id: parseInt(editRequestForm.patient_id, 10),
+          blood_bank_id: parseInt(editRequestForm.blood_bank_id, 10),
+          required_units: parseInt(editRequestForm.required_units, 10)
+        })
+      });
+      if (data.success) {
+        showMessage('Request updated successfully!', 'success');
+        closeEditRequestModal();
+        fetchRequests();
+        // After editing a request, switch to Management so staff can allocate units
+        setActiveTab('management');
+      } else {
+        showMessage(data.detail || 'Error updating request', 'error');
+      }
+    } catch (e) {
+      handleApiError(e, 'Error updating request');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function openDeleteRequestModal(requestId) {
+    setDeleteRequestId(requestId);
+    setShowDeleteRequestModal(true);
+  }
+
+  function closeDeleteRequestModal() {
+    setShowDeleteRequestModal(false);
+    setDeleteRequestId(null);
+  }
+
+  async function handleDeleteRequest() {
+    setLoading(true);
+    try {
+      const data = await request(`/requests/${deleteRequestId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (data.success) {
+        showMessage('Request deleted successfully!', 'success');
+        closeDeleteRequestModal();
+        fetchRequests();
+      } else {
+        showMessage(data.detail || 'Error deleting request', 'error');
+      }
+    } catch (e) {
+      handleApiError(e, 'Error deleting request');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleRecordDonation(e) {
     e.preventDefault();
     setLoading(true);
@@ -549,50 +749,69 @@ const BloodBankManagement = () => {
   async function handleAllocateBlood(e) {
     e.preventDefault();
     setLoading(true);
+    const reqId = parseInt(allocationForm.request_id, 10);
     try {
       const data = await request('/allocations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          request_id: parseInt(allocationForm.request_id, 10),
+          request_id: reqId,
           unit_id: parseInt(allocationForm.unit_id, 10)
         })
       });
-      if (data.success) {
-        showMessage('Blood allocated successfully!', 'success');
-        setAllocationForm({ request_id: '', unit_id: '' });
-        fetchAllocations();
-        fetchRequests();
-        fetchBloodUnits();
-        fetchInventory();
-        fetchStatistics();
-      } else {
-        showMessage(data.detail || 'Error allocating blood', 'error');
-      }
-    } catch (e) {
-      handleApiError(e, 'Error allocating blood');
-    } finally {
-      setLoading(false);
-    }
-  }
 
-  async function handleUpdateRequestStatus(requestId, status) {
-    setLoading(true);
-    try {
-      const data = await request(`/requests/${requestId}/status`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status })
-      });
       if (data.success) {
-        showMessage('Request status updated!', 'success');
-        fetchRequests();
-        fetchStatistics();
+        // Allocation succeeded — mark the request as Approved
+        try {
+          const upd = await request(`/requests/${reqId}/status`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'Approved' })
+          });
+          if (upd.success) {
+            showMessage('Blood allocated and request approved!', 'success');
+          } else {
+            showMessage('Blood allocated but failed to update request status.', 'error');
+          }
+        } catch (err) {
+          console.error('Error updating request status after allocation', err);
+          showMessage('Blood allocated but failed to update request status.', 'error');
+        }
+
+        setAllocationForm({ request_id: '', unit_id: '' });
+        await Promise.all([fetchAllocations(), fetchRequests(), fetchBloodUnits(), fetchInventory(), fetchStatistics()]);
       } else {
-        showMessage(data.detail || 'Error updating status', 'error');
+        // Allocation API returned success: false — deny the request
+        try {
+          await request(`/requests/${reqId}/status`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'Denied' })
+          });
+          showMessage(data.detail || 'Allocation failed. Request denied.', 'error');
+          await fetchRequests();
+        } catch (err) {
+          handleApiError(err, 'Error denying request after allocation failure');
+        }
       }
     } catch (e) {
-      handleApiError(e, 'Error updating request status');
+      // Network or unexpected error during allocation — deny the request to keep system consistent
+      console.error('Allocation error:', e);
+      if (allocationForm.request_id) {
+        try {
+          await request(`/requests/${reqId}/status`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'Denied' })
+          });
+          showMessage('Allocation failed; request denied.', 'error');
+          await fetchRequests();
+        } catch (err) {
+          handleApiError(err, 'Error denying request after allocation exception');
+        }
+      } else {
+        handleApiError(e, 'Error allocating blood');
+      }
     } finally {
       setLoading(false);
     }
@@ -939,6 +1158,21 @@ const BloodBankManagement = () => {
       <div className="patients-container">
         <h2 className="section-title">Manage Patients</h2>
 
+        {/* Patient Search Box */}
+        <div style={{ marginBottom: '18px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <input
+            type="text"
+            placeholder="Search patient by ID, name, or blood group..."
+            value={patientSearch}
+            onChange={handlePatientSearch}
+            style={{ padding: '8px 12px', borderRadius: '5px', border: '1px solid #d1d5db', minWidth: '260px' }}
+          />
+          {patientSearchMessage && (
+            <span style={{ color: '#991b1b', fontSize: '0.98rem', marginLeft: '8px' }}>{patientSearchMessage}</span>
+          )}
+        </div>
+
+        {/* Register New Patient */}
         <div className="card">
           <h3 className="section-title" style={{ marginTop: 0 }}>Register New Patient</h3>
           <form onSubmit={handleAddPatient}>
@@ -958,7 +1192,6 @@ const BloodBankManagement = () => {
                 min="1"
                 value={patientForm.age}
                 onInput={e => {
-                  // Only allow numeric values
                   e.target.value = e.target.value.replace(/[^0-9]/g, '');
                 }}
                 onChange={e => setPatientForm(prev => ({...prev, age: e.target.value}))}
@@ -990,7 +1223,7 @@ const BloodBankManagement = () => {
                 placeholder="Contact Number (10 digits) *"
                 value={patientForm.contact}
                 onChange={e => {
-                  const value = e.target.value.replace(/\D/g, ''); // Remove non-digits
+                  const value = e.target.value.replace(/\D/g, '');
                   if (value.length <= 10) {
                     setPatientForm(prev => ({...prev, contact: value}));
                   }
@@ -1014,6 +1247,101 @@ const BloodBankManagement = () => {
           </form>
         </div>
 
+        {/* Edit Patient Modal */}
+        {showEditPatientModal && (
+          <div className="modal-overlay" style={{ position: 'fixed', top:0, left:0, width:'100vw', height:'100vh', background:'rgba(0,0,0,0.3)', zIndex:2000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <div className="modal-content" style={{ background:'#fff', borderRadius:'8px', padding:'30px', minWidth:'350px', maxWidth:'95vw', boxShadow:'0 4px 24px rgba(0,0,0,0.18)' }}>
+              <h3 className="section-title">Edit Patient</h3>
+              <form onSubmit={handleEditPatientSubmit}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
+                  <input
+                    autoComplete="off"
+                    type="text"
+                    placeholder="Patient Name *"
+                    value={editPatientForm.name}
+                    onChange={e => setEditPatientForm(prev => ({...prev, name: e.target.value}))}
+                    required
+                  />
+                  <input
+                    autoComplete="off"
+                    type="number"
+                    placeholder="Age *"
+                    min="1"
+                    value={editPatientForm.age}
+                    onInput={e => {
+                      e.target.value = e.target.value.replace(/[^0-9]/g, '');
+                    }}
+                    onChange={e => setEditPatientForm(prev => ({...prev, age: e.target.value}))}
+                    required
+                  />
+                  <select
+                    value={editPatientForm.gender}
+                    onChange={e => setEditPatientForm(prev => ({...prev, gender: e.target.value}))}
+                  >
+                    {genders.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                  <select
+                    value={editPatientForm.blood_group}
+                    onChange={e => setEditPatientForm(prev => ({...prev, blood_group: e.target.value}))}
+                  >
+                    {bloodGroups.map(bg => <option key={bg} value={bg}>{bg}</option>)}
+                  </select>
+                  <select
+                    value={editPatientForm.hospital_id}
+                    onChange={e => setEditPatientForm(prev => ({...prev, hospital_id: e.target.value}))}
+                    required
+                  >
+                    <option value="">Select Hospital *</option>
+                    {hospitals.map(h => <option key={h.HospitalID} value={h.HospitalID}>{h.HospitalName}</option>)}
+                  </select>
+                  <input
+                    autoComplete="off"
+                    type="tel"
+                    placeholder="Contact Number (10 digits) *"
+                    value={editPatientForm.contact}
+                    onChange={e => {
+                      const value = e.target.value.replace(/\D/g, '');
+                      if (value.length <= 10) {
+                        setEditPatientForm(prev => ({...prev, contact: value}));
+                      }
+                    }}
+                    pattern="[0-9]{10}"
+                    maxLength="10"
+                    required
+                    title="Please enter exactly 10 digits"
+                  />
+                </div>
+                <textarea
+                  autoComplete="off"
+                  placeholder="Medical Condition"
+                  value={editPatientForm.condition}
+                  onChange={e => setEditPatientForm(prev => ({...prev, condition: e.target.value}))}
+                  style={{ marginTop: '10px' }}
+                />
+                <div style={{ marginTop: '15px', display:'flex', gap:'10px' }}>
+                  <button type="submit" className="button" disabled={loading}>{loading ? 'Saving...' : 'Save Changes'}</button>
+                  <button type="button" className="button" style={{ background:'#e5e7eb', color:'#111' }} onClick={closeEditPatientModal}>Cancel</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Delete Patient Modal */}
+        {showDeletePatientModal && (
+          <div className="modal-overlay" style={{ position: 'fixed', top:0, left:0, width:'100vw', height:'100vh', background:'rgba(0,0,0,0.3)', zIndex:2000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <div className="modal-content" style={{ background:'#fff', borderRadius:'8px', padding:'30px', minWidth:'320px', maxWidth:'95vw', boxShadow:'0 4px 24px rgba(0,0,0,0.18)' }}>
+              <h3 className="section-title">Delete Patient</h3>
+              <p>Are you sure you want to delete this patient? This action cannot be undone.</p>
+              <div style={{ marginTop: '20px', display:'flex', gap:'10px' }}>
+                <button className="button" style={{ background:'#ef4444' }} onClick={handleDeletePatient} disabled={loading}>{loading ? 'Deleting...' : 'Delete'}</button>
+                <button className="button" style={{ background:'#e5e7eb', color:'#111' }} onClick={closeDeletePatientModal}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Patients List Table */}
         <div className="card">
           <h3 className="section-title" style={{ marginTop: 0 }}>Patients List</h3>
           <div className="table-container">
@@ -1028,20 +1356,28 @@ const BloodBankManagement = () => {
                     <th>Hospital</th>
                     <th>Contact</th>
                     <th>Condition</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {patients.map(patient => (
-                    <tr key={patient.PatientID}>
-                      <td>{patient.PatientID}</td>
-                      <td>{patient.PatientName}</td>
-                      <td>{patient.Age}</td>
-                      <td><strong>{patient.BloodGroupRequired}</strong></td>
-                      <td>{patient.HospitalName}</td>
-                      <td>{patient.ContactNo}</td>
-                      <td>{patient.MedicalCondition || '-'}</td>
-                    </tr>
-                  ))}
+                  {patients.map(patient => {
+                    const isHighlighted = patientSearchResult === patient.PatientID;
+                    return (
+                      <tr key={patient.PatientID} style={isHighlighted ? { background: '#fef9c3', fontWeight: 600 } : {}}>
+                        <td>{patient.PatientID}</td>
+                        <td>{patient.PatientName}</td>
+                        <td>{patient.Age}</td>
+                        <td><strong>{patient.BloodGroupRequired}</strong></td>
+                        <td>{patient.HospitalName}</td>
+                        <td>{patient.ContactNo}</td>
+                        <td>{patient.MedicalCondition || '-'}</td>
+                        <td>
+                          <button className="button" style={{ padding:'4px 10px', fontSize:'0.9rem', marginRight:'6px' }} onClick={() => openEditPatientModal(patient)} disabled={loading}>Edit</button>
+                          <button className="button" style={{ padding:'4px 10px', fontSize:'0.9rem', background:'#ef4444' }} onClick={() => openDeletePatientModal(patient.PatientID)} disabled={loading}>Delete</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             ) : (
@@ -1051,7 +1387,7 @@ const BloodBankManagement = () => {
         </div>
       </div>
     );
-  }, [patientForm, patients, loading, handleAddPatient, genders, bloodGroups, hospitals]);
+  }, [patientForm, patients, loading, handleAddPatient, genders, bloodGroups, hospitals, patientSearch, patientSearchResult, patientSearchMessage, showEditPatientModal, editPatientForm, showDeletePatientModal]);
 
   function RequestsView() {
     return (
@@ -1126,26 +1462,8 @@ const BloodBankManagement = () => {
                       </td>
                       <td>{new Date(req.RequestDate).toLocaleDateString()}</td>
                       <td>
-                        {req.Status === 'Pending' && (
-                          <>
-                            <button 
-                              onClick={() => handleUpdateRequestStatus(req.RequestID, 'Fulfilled')}
-                              className="button"
-                              disabled={loading}
-                              style={{ marginRight: '5px', padding: '5px 10px', fontSize: '0.9rem' }}
-                            >
-                              <CheckCircle size={16} style={{ marginRight: '4px' }} /> Fulfill
-                            </button>
-                            <button 
-                              onClick={() => handleUpdateRequestStatus(req.RequestID, 'Denied')}
-                              className="button"
-                              disabled={loading}
-                              style={{ padding: '5px 10px', fontSize: '0.9rem', background: '#ef4444' }}
-                            >
-                              <XCircle size={16} style={{ marginRight: '4px' }} /> Deny
-                            </button>
-                          </>
-                        )}
+                        <button className="button" style={{ padding:'4px 10px', fontSize:'0.9rem', marginRight:'6px' }} onClick={() => openEditRequestModal(req)} disabled={loading}>Edit</button>
+                        <button className="button" style={{ padding:'4px 10px', fontSize:'0.9rem', background:'#ef4444' }} onClick={() => openDeleteRequestModal(req.RequestID)} disabled={loading}>Delete</button>
                       </td>
                     </tr>
                   ))}
@@ -1156,6 +1474,61 @@ const BloodBankManagement = () => {
             )}
           </div>
         </div>
+        {/* Edit Request Modal */}
+        {showEditRequestModal && (
+          <div className="modal-overlay" style={{ position: 'fixed', top:0, left:0, width:'100vw', height:'100vh', background:'rgba(0,0,0,0.3)', zIndex:2000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <div className="modal-content" style={{ background:'#fff', borderRadius:'8px', padding:'30px', minWidth:'350px', maxWidth:'95vw', boxShadow:'0 4px 24px rgba(0,0,0,0.18)' }}>
+              <h3 className="section-title">Edit Request</h3>
+              <form onSubmit={handleEditRequestSubmit}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
+                  <select
+                    value={editRequestForm.patient_id}
+                    onChange={e => setEditRequestForm(prev => ({...prev, patient_id: e.target.value}))}
+                    required
+                  >
+                    <option value="">Select Patient *</option>
+                    {patients.map(p => <option key={p.PatientID} value={p.PatientID}>{p.PatientName} ({p.BloodGroupRequired})</option>)}
+                  </select>
+                  <select
+                    value={editRequestForm.blood_bank_id}
+                    onChange={e => setEditRequestForm(prev => ({...prev, blood_bank_id: e.target.value}))}
+                    required
+                  >
+                    <option value="">Select Blood Bank *</option>
+                    {bloodBanks.map(b => <option key={b.BloodBankID} value={b.BloodBankID}>{b.BloodBankName}</option>)}
+                  </select>
+                  <input
+                    autoComplete="off"
+                    type="number"
+                    placeholder="Required Units *"
+                    min="1"
+                    value={editRequestForm.required_units}
+                    onChange={e => setEditRequestForm(prev => ({...prev, required_units: e.target.value}))}
+                    required
+                  />
+                </div>
+                <div style={{ marginTop: '15px', display:'flex', gap:'10px' }}>
+                  <button type="submit" className="button" disabled={loading}>{loading ? 'Saving...' : 'Save Changes'}</button>
+                  <button type="button" className="button" style={{ background:'#e5e7eb', color:'#111' }} onClick={closeEditRequestModal}>Cancel</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Delete Request Modal */}
+        {showDeleteRequestModal && (
+          <div className="modal-overlay" style={{ position: 'fixed', top:0, left:0, width:'100vw', height:'100vh', background:'rgba(0,0,0,0.3)', zIndex:2000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <div className="modal-content" style={{ background:'#fff', borderRadius:'8px', padding:'30px', minWidth:'320px', maxWidth:'95vw', boxShadow:'0 4px 24px rgba(0,0,0,0.18)' }}>
+              <h3 className="section-title">Delete Request</h3>
+              <p>Are you sure you want to delete this request? This action cannot be undone.</p>
+              <div style={{ marginTop: '20px', display:'flex', gap:'10px' }}>
+                <button className="button" style={{ background:'#ef4444' }} onClick={handleDeleteRequest} disabled={loading}>{loading ? 'Deleting...' : 'Delete'}</button>
+                <button className="button" style={{ background:'#e5e7eb', color:'#111' }} onClick={closeDeleteRequestModal}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
