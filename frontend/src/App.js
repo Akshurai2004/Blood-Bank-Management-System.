@@ -808,68 +808,52 @@ const BloodBankManagement = () => {
     e.preventDefault();
     setLoading(true);
     const reqId = parseInt(allocationForm.request_id, 10);
+    const unitId = allocationForm.unit_id;
+    
     try {
-      const data = await request('/allocations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          request_id: reqId,
-          unit_id: parseInt(allocationForm.unit_id, 10)
-        })
-      });
-
-      if (data.success) {
-        // Allocation succeeded — mark the request as Approved
-        try {
-          const upd = await request(`/requests/${reqId}/status`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ status: 'Approved' })
-          });
-          if (upd.success) {
-            showMessage('Blood allocated and request approved!', 'success');
-          } else {
-            showMessage('Blood allocated but failed to update request status.', 'error');
-          }
-        } catch (err) {
-          console.error('Error updating request status after allocation', err);
-          showMessage('Blood allocated but failed to update request status.', 'error');
+      // Check if "No Matching Blood Type" option was selected
+      if (unitId === 'no_match') {
+        // Directly deny the request without allocation
+        const data = await request(`/requests/${reqId}/status`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'Denied' })
+        });
+        
+        if (data.success) {
+          showMessage('Request marked as Denied due to no matching blood type available.', 'error');
+          setAllocationForm({ request_id: '', unit_id: '' });
+          await Promise.all([fetchRequests(), fetchStatistics()]);
+        } else {
+          showMessage('Failed to deny request.', 'error');
         }
-
-        setAllocationForm({ request_id: '', unit_id: '' });
-        await Promise.all([fetchAllocations(), fetchRequests(), fetchBloodUnits(), fetchInventory(), fetchStatistics()]);
       } else {
-        // Allocation API returned success: false — deny the request
-        try {
-          await request(`/requests/${reqId}/status`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ status: 'Denied' })
-          });
-          showMessage(data.detail || 'Allocation failed. Request denied.', 'error');
-          await fetchRequests();
-        } catch (err) {
-          handleApiError(err, 'Error denying request after allocation failure');
+        // Normal allocation process
+        const data = await request('/allocations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            request_id: reqId,
+            unit_id: parseInt(unitId, 10)
+          })
+        });
+
+        // Backend now handles blood type matching and status updates
+        if (data.success) {
+          // Blood types matched - allocation successful and request marked as Fulfilled
+          showMessage(data.message || 'Blood allocated successfully and request marked as Fulfilled!', 'success');
+          setAllocationForm({ request_id: '', unit_id: '' });
+          await Promise.all([fetchAllocations(), fetchRequests(), fetchBloodUnits(), fetchInventory(), fetchStatistics()]);
+        } else {
+          // Blood types didn't match - request marked as Denied
+          showMessage(data.message || 'Blood type mismatch. Request marked as Denied.', 'error');
+          setAllocationForm({ request_id: '', unit_id: '' });
+          await Promise.all([fetchAllocations(), fetchRequests(), fetchBloodUnits(), fetchInventory(), fetchStatistics()]);
         }
       }
     } catch (e) {
-      // Network or unexpected error during allocation — deny the request to keep system consistent
-      console.error('Allocation error:', e);
-      if (allocationForm.request_id) {
-        try {
-          await request(`/requests/${reqId}/status`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ status: 'Denied' })
-          });
-          showMessage('Allocation failed; request denied.', 'error');
-          await fetchRequests();
-        } catch (err) {
-          handleApiError(err, 'Error denying request after allocation exception');
-        }
-      } else {
-        handleApiError(e, 'Error allocating blood');
-      }
+      // Handle any errors
+      handleApiError(e, 'Error processing allocation');
     } finally {
       setLoading(false);
     }
@@ -1646,7 +1630,9 @@ const BloodBankManagement = () => {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
               <select
                 value={allocationForm.request_id}
-                onChange={e => setAllocationForm(prev => ({...prev, request_id: e.target.value}))}
+                onChange={e => {
+                  setAllocationForm(prev => ({...prev, request_id: e.target.value, unit_id: ''}));
+                }}
                 required
               >
                 <option value="">Select Request *</option>
@@ -1660,17 +1646,71 @@ const BloodBankManagement = () => {
                 value={allocationForm.unit_id}
                 onChange={e => setAllocationForm(prev => ({...prev, unit_id: e.target.value}))}
                 required
+                disabled={!allocationForm.request_id}
               >
-                <option value="">Select Blood Unit *</option>
-                {bloodUnits.filter(u => u.Status === 'Available').map(u => 
-                  <option key={u.UnitID} value={u.UnitID}>
-                    Unit {u.UnitID} - {u.BloodGroup} ({u.Component})
+                <option value="">
+                  {!allocationForm.request_id ? 'Select Request First' : 'Select Blood Unit *'}
+                </option>
+                {allocationForm.request_id && (
+                  <option value="no_match" style={{ color: '#dc2626', fontWeight: 'bold' }}>
+                    ❌ No Matching Blood Type Available - Deny Request
                   </option>
                 )}
+                {(() => {
+                  const selectedRequest = requests.find(r => r.RequestID === parseInt(allocationForm.request_id));
+                  const requiredBloodGroup = selectedRequest?.BloodGroupRequired;
+                  const availableUnits = bloodUnits.filter(u => u.Status === 'Available');
+                  const matchingUnits = availableUnits.filter(u => u.BloodGroup === requiredBloodGroup);
+                  const nonMatchingUnits = availableUnits.filter(u => u.BloodGroup !== requiredBloodGroup);
+                  
+                  return (
+                    <>
+                      {matchingUnits.length > 0 && (
+                        <optgroup label={`✓ Matching Blood Type (${requiredBloodGroup})`}>
+                          {matchingUnits.map(u => 
+                            <option key={u.UnitID} value={u.UnitID}>
+                              Unit {u.UnitID} - {u.BloodGroup} ({u.Component}) - Expires: {new Date(u.ExpirationDate).toLocaleDateString()}
+                            </option>
+                          )}
+                        </optgroup>
+                      )}
+                      {nonMatchingUnits.length > 0 && (
+                        <optgroup label="⚠ Non-Matching Blood Types (Will be Denied)">
+                          {nonMatchingUnits.map(u => 
+                            <option key={u.UnitID} value={u.UnitID}>
+                              Unit {u.UnitID} - {u.BloodGroup} ({u.Component}) - Expires: {new Date(u.ExpirationDate).toLocaleDateString()}
+                            </option>
+                          )}
+                        </optgroup>
+                      )}
+                    </>
+                  );
+                })()}
               </select>
             </div>
+            {allocationForm.request_id && (() => {
+              const selectedRequest = requests.find(r => r.RequestID === parseInt(allocationForm.request_id));
+              const isNoMatch = allocationForm.unit_id === 'no_match';
+              return selectedRequest ? (
+                <div style={{ 
+                  marginTop: '10px', 
+                  padding: '10px', 
+                  background: isNoMatch ? '#fef2f2' : '#f3f4f6', 
+                  borderRadius: '5px',
+                  fontSize: '0.95rem',
+                  border: isNoMatch ? '1px solid #fca5a5' : 'none'
+                }}>
+                  <strong>Request Details:</strong> Patient {selectedRequest.PatientName} requires <strong>{selectedRequest.BloodGroupRequired}</strong> blood type ({selectedRequest.RequiredUnits} units needed)
+                  {isNoMatch && (
+                    <div style={{ marginTop: '8px', color: '#dc2626', fontWeight: '500' }}>
+                      ⚠️ Warning: This request will be marked as DENIED with no blood allocated.
+                    </div>
+                  )}
+                </div>
+              ) : null;
+            })()}
             <button type="submit" className="button" disabled={loading} style={{ marginTop: '15px' }}>
-              {loading ? 'Allocating...' : 'Allocate Blood'}
+              {loading ? (allocationForm.unit_id === 'no_match' ? 'Denying...' : 'Allocating...') : (allocationForm.unit_id === 'no_match' ? 'Deny Request' : 'Allocate Blood')}
             </button>
           </form>
         </div>
@@ -1797,31 +1837,42 @@ const BloodBankManagement = () => {
 
         {/* Recent Allocations */}
         <div className="card">
-          <h3 className="section-title" style={{ marginTop: 0 }}>Recent Allocations</h3>
+          <h3 className="section-title" style={{ marginTop: 0 }}>Recent Allocations & Request History</h3>
           <div className="table-container">
             {allocations.length > 0 ? (
               <table>
                 <thead>
                   <tr>
-                    <th>Allocation</th>
+                    <th>Allocation ID</th>
+                    <th>Request ID</th>
                     <th>Patient</th>
                     <th>Blood Group</th>
                     <th>Blood Bank</th>
                     <th>Component</th>
+                    <th>Status</th>
                     <th>Date</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {allocations.slice(0, 10).map(allocation => (
-                    <tr key={allocation.AllocationID}>
-                      <td>{allocation.AllocationID}</td>
-                      <td>{allocation.PatientName}</td>
-                      <td><strong>{allocation.BloodGroup}</strong></td>
-                      <td>{allocation.BloodBankName}</td>
-                      <td>{allocation.Component}</td>
-                      <td>{new Date(allocation.AllocationDate).toLocaleString()}</td>
-                    </tr>
-                  ))}
+                  {allocations.slice(0, 20).map(allocation => {
+                    const isFailed = allocation.DeliveryStatus === 'Failed';
+                    return (
+                      <tr key={allocation.AllocationID} style={{ background: isFailed ? '#fef2f2' : 'transparent' }}>
+                        <td>{allocation.AllocationID}</td>
+                        <td>{allocation.RequestID}</td>
+                        <td>{allocation.PatientName}</td>
+                        <td><strong>{allocation.BloodGroup}</strong></td>
+                        <td>{allocation.BloodBankName}</td>
+                        <td>{allocation.Component}</td>
+                        <td>
+                          <span className={`status-badge ${isFailed ? 'denied' : allocation.DeliveryStatus?.toLowerCase() || 'pending'}`}>
+                            {isFailed ? 'Denied (Mismatch)' : allocation.DeliveryStatus || 'Fulfilled'}
+                          </span>
+                        </td>
+                        <td>{new Date(allocation.AllocationDate).toLocaleString()}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             ) : (
