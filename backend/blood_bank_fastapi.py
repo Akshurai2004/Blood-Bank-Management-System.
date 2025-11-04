@@ -408,13 +408,83 @@ async def get_all_allocations():
 
 @app.post("/api/allocations")
 async def create_allocation(allocation: AllocationCreate):
-    allocation_id = db.allocate_blood_unit(
-        request_id=allocation.request_id,
-        unit_id=allocation.unit_id
+    # Get request details to check blood type
+    request_data = db.fetch_query(
+        """
+        SELECT r.RequestID, r.RequiredUnits, p.BloodGroupRequired, r.Status
+        FROM Request r
+        JOIN Patient p ON r.PatientID = p.PatientID
+        WHERE r.RequestID = %s
+        """,
+        (allocation.request_id,)
     )
-    if not allocation_id:
-        raise HTTPException(status_code=400, detail="Failed to create allocation")
-    return {"success": True, "message": "Blood unit allocated successfully", "allocation_id": allocation_id}
+    
+    if not request_data:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    request_info = request_data[0]
+    
+    # Check if request is already fulfilled or denied
+    if request_info['Status'] in ['Fulfilled', 'Denied']:
+        raise HTTPException(status_code=400, detail=f"Request is already {request_info['Status']}")
+    
+    # Get blood unit details
+    unit_data = db.fetch_query(
+        "SELECT UnitID, BloodGroup, Status FROM BloodUnit WHERE UnitID = %s",
+        (allocation.unit_id,)
+    )
+    
+    if not unit_data:
+        raise HTTPException(status_code=404, detail="Blood unit not found")
+    
+    unit_info = unit_data[0]
+    
+    # Check if unit is available
+    if unit_info['Status'] != 'Available':
+        raise HTTPException(status_code=400, detail="Blood unit is not available")
+    
+    # Check if blood types match
+    required_blood_group = request_info['BloodGroupRequired']
+    unit_blood_group = unit_info['BloodGroup']
+    
+    if required_blood_group == unit_blood_group:
+        # Blood types match - allocate and mark as fulfilled
+        allocation_id = db.allocate_blood_unit(
+            request_id=allocation.request_id,
+            unit_id=allocation.unit_id
+        )
+        if not allocation_id:
+            raise HTTPException(status_code=400, detail="Failed to create allocation")
+        
+        # Update request status to Fulfilled
+        db.update_request_status(allocation.request_id, 'Fulfilled')
+        
+        return {
+            "success": True,
+            "message": "Blood unit allocated successfully and request marked as Fulfilled",
+            "allocation_id": allocation_id,
+            "status": "Fulfilled"
+        }
+    else:
+        # Blood types don't match - mark request as denied and log the attempt
+        db.update_request_status(allocation.request_id, 'Denied')
+        
+        # Log the denied allocation attempt
+        db.execute_query(
+            """
+            INSERT INTO Allocation (RequestID, UnitID, DeliveryStatus)
+            VALUES (%s, %s, 'Failed')
+            """,
+            (allocation.request_id, allocation.unit_id)
+        )
+        
+        return {
+            "success": False,
+            "message": f"Blood type mismatch: Request requires {required_blood_group} but unit is {unit_blood_group}. Request marked as Denied.",
+            "status": "Denied",
+            "required_blood_group": required_blood_group,
+            "unit_blood_group": unit_blood_group
+        }
 
 
 # ==================== STATISTICS ENDPOINTS ====================
