@@ -258,20 +258,22 @@ const BloodBankManagement = () => {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: editDonorForm.name,
-          age: age,
-          gender: editDonorForm.gender,
-          blood_group: editDonorForm.blood_group,
-          contact: editDonorForm.contact,
-          email: editDonorForm.email,
-          address: editDonorForm.address
+          DonorName: editDonorForm.name,
+          Age: age,
+          Gender: editDonorForm.gender,
+          BloodGroup: editDonorForm.blood_group,
+          ContactNo: editDonorForm.contact,
+          Email: editDonorForm.email,
+          Address: editDonorForm.address
         })
       });
       if (data.success) {
         showMessage('Donor updated successfully!', 'success');
         closeEditDonorModal();
-        fetchDonors();
-        fetchStatistics();
+        // Small delay to ensure DB transaction is committed
+        await new Promise(resolve => setTimeout(resolve, 100));
+        await fetchDonors();
+        await fetchStatistics();
       } else {
         showMessage(data.detail || 'Error updating donor', 'error');
       }
@@ -669,6 +671,15 @@ const BloodBankManagement = () => {
   }
 
   function openEditRequestModal(req) {
+    // Check if the request status is Fulfilled or Denied
+    if (req.Status === 'Fulfilled' || req.Status === 'Denied') {
+      showMessage(
+        `Cannot edit this request. The request has already been ${req.Status.toLowerCase()} and has reached its final decision.`,
+        'error'
+      );
+      return;
+    }
+    
     setEditRequestId(req.RequestID);
     setEditRequestForm({
       patient_id: req.PatientID ? String(req.PatientID) : '',
@@ -723,8 +734,17 @@ const BloodBankManagement = () => {
     }
   }
 
-  function openDeleteRequestModal(requestId) {
-    setDeleteRequestId(requestId);
+  function openDeleteRequestModal(req) {
+    // Check if the request status is Fulfilled or Denied
+    if (req.Status === 'Fulfilled' || req.Status === 'Denied') {
+      showMessage(
+        `Cannot delete this request. The request has already been ${req.Status.toLowerCase()} and has reached its final decision.`,
+        'error'
+      );
+      return;
+    }
+    
+    setDeleteRequestId(req.RequestID);
     setShowDeleteRequestModal(true);
   }
 
@@ -1427,7 +1447,7 @@ const BloodBankManagement = () => {
     );
   }, [patientForm, patients, loading, handleAddPatient, genders, bloodGroups, hospitals, patientSearch, patientSearchResult, patientSearchMessage, showEditPatientModal, editPatientForm, showDeletePatientModal]);
 
-  function RequestsView() {
+  const RequestsView = useMemo(() => {
     return (
       <div className="requests-container">
         <h2 className="section-title">Blood Requests</h2>
@@ -1479,7 +1499,7 @@ const BloodBankManagement = () => {
                     <th>Patient</th>
                     <th>Blood Group</th>
                     <th>Units</th>
-                    <th>Hospital</th>
+                    <th>Blood Bank</th>
                     <th>Status</th>
                     <th>Request Date</th>
                     <th>Action</th>
@@ -1492,7 +1512,7 @@ const BloodBankManagement = () => {
                       <td>{req.PatientName}</td>
                       <td><strong>{req.BloodGroupRequired}</strong></td>
                       <td>{req.RequiredUnits}</td>
-                      <td>{req.HospitalName}</td>
+                      <td>{req.BloodBankName}</td>
                       <td>
                         <span className={`status-badge ${req.Status?.toLowerCase()}`}>
                           {req.Status}
@@ -1501,7 +1521,7 @@ const BloodBankManagement = () => {
                       <td>{new Date(req.RequestDate).toLocaleDateString()}</td>
                       <td>
                         <button className="button" style={{ padding:'4px 10px', fontSize:'0.9rem', marginRight:'6px' }} onClick={() => openEditRequestModal(req)} disabled={loading}>Edit</button>
-                        <button className="button" style={{ padding:'4px 10px', fontSize:'0.9rem', background:'#ef4444' }} onClick={() => openDeleteRequestModal(req.RequestID)} disabled={loading}>Delete</button>
+                        <button className="button" style={{ padding:'4px 10px', fontSize:'0.9rem', background:'#ef4444' }} onClick={() => openDeleteRequestModal(req)} disabled={loading}>Delete</button>
                       </td>
                     </tr>
                   ))}
@@ -1569,9 +1589,9 @@ const BloodBankManagement = () => {
         )}
       </div>
     );
-  }
+  }, [requestForm, patients, bloodBanks, loading, handleCreateRequest, requests, showEditRequestModal, editRequestForm, showDeleteRequestModal]);
 
-  function ManagementView() {
+  const ManagementView = useMemo(() => {
     return (
       <div className="management-container">
         <h2 className="section-title">System Management</h2>
@@ -1811,7 +1831,7 @@ const BloodBankManagement = () => {
         </div>
       </div>
     );
-  }
+  }, [donationForm, donors, bloodBanks, components, loading, handleRecordDonation, allocationForm, requests, bloodUnits, handleAllocateBlood, hospitalForm, handleAddHospital, bloodBankForm, handleAddBloodBank, inventory, allocations]);
 
   return (
     <div>
@@ -1862,8 +1882,8 @@ const BloodBankManagement = () => {
         {activeTab === 'dashboard' && <DashboardView />}
         {activeTab === 'donors' && DonorsView}
         {activeTab === 'patients' && PatientsView}
-        {activeTab === 'requests' && <RequestsView />}
-        {activeTab === 'management' && <ManagementView />}
+        {activeTab === 'requests' && RequestsView}
+        {activeTab === 'management' && ManagementView}
       </div>
     </div>
   );
