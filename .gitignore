@@ -6,6 +6,7 @@ package-lock.json
 backend/__pycache__
 frontend/node_modules
 frontend/package-lock.json
+database/trash.sql
 
 # Python bytecode
 __pycache__/

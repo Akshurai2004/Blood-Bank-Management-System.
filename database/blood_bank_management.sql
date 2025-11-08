@@ -1,5 +1,3 @@
-
-
 DROP DATABASE IF EXISTS BloodBankDB;
 CREATE DATABASE BloodBankDB;
 USE BloodBankDB;
@@ -46,14 +44,14 @@ CREATE TABLE BloodUnit (
     CollectionDate DATE NOT NULL,
     ExpirationDate DATE NOT NULL,
     Status ENUM('Available','Reserved','Used','Expired') DEFAULT 'Available',
-    Component ENUM('Whole Blood','RBC','Plasma','Platelets') DEFAULT 'Whole Blood', -- recommended-- 
+    Component ENUM('Whole Blood','RBC','Plasma','Platelets') DEFAULT 'Whole Blood', 
     CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (DonorID) REFERENCES Donor(DonorID) ON DELETE CASCADE,
     FOREIGN KEY (BloodBankID) REFERENCES BloodBank(BloodBankID) ON DELETE RESTRICT,
     INDEX idx_blood_group (BloodGroup),
     INDEX idx_status (Status),
-    INDEX idx_expiration (ExpirationDate), -- need not to search through entire thing,filters out which makes query faster
+    INDEX idx_expiration (ExpirationDate), 
     CHECK (ExpirationDate > CollectionDate)
 );
 CREATE TABLE Patient (
@@ -93,7 +91,7 @@ CREATE TABLE Allocation (
     FOREIGN KEY (UnitID) REFERENCES BloodUnit(UnitID) ON DELETE RESTRICT,
     INDEX idx_request (RequestID),
     INDEX idx_unit (UnitID)
-); -- IT IS MAINLY USED TO ALLOCATE UNITS OF BLOOD TO REQID  
+);  
 
 
 -- View 1: Available Blood Inventory by Blood Bank
@@ -129,11 +127,11 @@ CREATE PROCEDURE RecordBloodDonation(
 BEGIN
     DECLARE v_BloodGroup VARCHAR(5);
     DECLARE v_ExpirationDate DATE;
-    SELECT BloodGroup INTO v_BloodGroup FROM Donor WHERE DonorID = p_DonorID;  -- Get donor's blood group
-    SET v_ExpirationDate = DATE_ADD(CURDATE(), INTERVAL 42 DAY);     -- Calculate expiration date (42 days for whole blood)    
-    INSERT INTO BloodUnit (DonorID, BloodBankID, BloodGroup, Quantity, CollectionDate, ExpirationDate, Component, Status)    -- Insert blood unit
+    SELECT BloodGroup INTO v_BloodGroup FROM Donor WHERE DonorID = p_DonorID;  
+    SET v_ExpirationDate = DATE_ADD(CURDATE(), INTERVAL 42 DAY);         
+    INSERT INTO BloodUnit (DonorID, BloodBankID, BloodGroup, Quantity, CollectionDate, ExpirationDate, Component, Status)
     VALUES (p_DonorID, p_BloodBankID, v_BloodGroup, p_Quantity, CURDATE(), v_ExpirationDate, p_Component, 'Available');
-    SELECT 'Donation recorded successfully!' AS Message; -- Update donor stats (LastDonationDate and TotalDonations will be updated by trigger)
+    SELECT 'Donation recorded successfully!' AS Message; 
 END //
 DELIMITER ;
 
@@ -147,7 +145,7 @@ READS SQL DATA
 BEGIN
     DECLARE v_LastDonation DATE;
     DECLARE v_DaysGap INT;
-    SELECT LastDonationDate INTO v_LastDonation FROM Donor WHERE DonorID = p_DonorID;-- will check the last donation date (trigger) 
+    SELECT LastDonationDate INTO v_LastDonation FROM Donor WHERE DonorID = p_DonorID;
     IF v_LastDonation IS NULL THEN
         RETURN 'ELIGIBLE - First time donor';
     END IF;
