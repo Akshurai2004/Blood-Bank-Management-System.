@@ -93,6 +93,24 @@ CREATE TABLE Allocation (
     INDEX idx_unit (UnitID)
 );  
 
+CREATE TABLE User (
+    UserID INT AUTO_INCREMENT PRIMARY KEY,
+    FullName VARCHAR(100) NOT NULL,
+    Email VARCHAR(100) UNIQUE NOT NULL,
+    PasswordHash VARCHAR(255) NOT NULL,
+    Role ENUM('Donor','Hospital','Admin','SuperAdmin') NOT NULL DEFAULT 'Donor',
+    DonorID INT NULL,
+    HospitalID INT NULL,
+    BloodBankID INT NULL,
+    CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (DonorID) REFERENCES Donor(DonorID) ON DELETE SET NULL,
+    FOREIGN KEY (HospitalID) REFERENCES Hospital(HospitalID) ON DELETE SET NULL,
+    FOREIGN KEY (BloodBankID) REFERENCES BloodBank(BloodBankID) ON DELETE SET NULL,
+    INDEX idx_user_email (Email),
+    INDEX idx_user_role (Role)
+);
+
 
 -- View 1: Available Blood Inventory by Blood Bank
  -- MAINLY USED TO SEE THE AVAILABLE BLOOD BANK AND BLOOD GROUP IMMEDIATELY

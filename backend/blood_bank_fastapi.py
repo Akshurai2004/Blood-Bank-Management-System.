@@ -1,26 +1,97 @@
 import os
 from contextlib import asynccontextmanager
 from typing import Optional, Literal
+from datetime import datetime, timedelta, timezone
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+import bcrypt
+import jwt
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
 
-# Import your database class (use package-relative import since this module is
-# intended to be loaded as `backend.blood_bank_fastapi`)
-from .blood_bank_backend import BloodBankDB
+# Import database and message queue services
+try:
+    from .blood_bank_backend import BloodBankDB
+    from .queue_service import message_queue
+    from .email_service import OTPService, _otp_store
+except ImportError:
+    from blood_bank_backend import BloodBankDB
+    from queue_service import message_queue
+    from email_service import OTPService, _otp_store
 
 # Shared literals for validation
 BloodGroupLiteral = Literal['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']
 GenderLiteral = Literal['M', 'F', 'O']
 RequestStatusLiteral = Literal['Pending', 'Fulfilled', 'Denied']
+RoleLiteral = Literal['Donor', 'Hospital', 'Admin', 'SuperAdmin']
+
+# JWT Configuration
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "bloodbank-jwt-secret-key-super-secure-2026")
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440")) # 24 hours
+
+security = HTTPBearer(auto_error=False)
+
+def hash_password(password: str) -> str:
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+
+def verify_password(password: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    if "sub" in to_encode:
+        to_encode["sub"] = str(to_encode["sub"])
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire, "iat": datetime.now(timezone.utc)})
+    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[dict]:
+    if not credentials:
+        return None
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        sub_val = payload.get("sub")
+        if sub_val is None:
+            return None
+        user_id = int(sub_val)
+        user = db.get_user_by_id(user_id)
+        if not user:
+            return None
+        return user
+    except Exception:
+        return None
+
+def require_auth(user: Optional[dict] = Depends(get_current_user)):
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication token required or expired")
+    return user
+
+def require_roles(allowed_roles: list[str]):
+    def _role_checker(user: dict = Depends(require_auth)):
+        if user.get("Role") not in allowed_roles and user.get("Role") != "SuperAdmin":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: insufficient permissions")
+        return user
+    return _role_checker
 
 # Initialize database outside of app so it can be accessed by lifespan
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "localhost"),
     "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_PASSWORD", "akshat@MySQL"),
+    "password": os.getenv("DB_PASSWORD", "Pes@2004"),
     "database": os.getenv("DB_NAME", "BloodBankDB"),
 }
 db = BloodBankDB(**DB_CONFIG)
@@ -34,17 +105,66 @@ async def lifespan(app: FastAPI):
     db.disconnect()
 
 # Initialize FastAPI app with lifespan
-app = FastAPI(title="Blood Bank Management API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Blood Bank Management API", version="2.0.0", lifespan=lifespan)
 
 # Add CORS middleware to allow React to connect
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict to your React app URL origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+# Pydantic models for Auth
+class UserRegister(BaseModel):
+    full_name: str = Field(min_length=2, max_length=100)
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=100)
+    role: RoleLiteral = 'Donor'
+    # Optional fields for auto-linking profiles
+    donor_id: Optional[int] = None
+    age: Optional[int] = Field(default=None, ge=18, le=65)
+    gender: Optional[GenderLiteral] = None
+    blood_group: Optional[BloodGroupLiteral] = None
+    contact: Optional[str] = None
+    address: Optional[str] = None
+    hospital_id: Optional[int] = None
+    blood_bank_id: Optional[int] = None
+
+class SendRegistrationOTPRequest(BaseModel):
+    full_name: str = Field(min_length=2, max_length=100)
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=100)
+    role: RoleLiteral = 'Donor'
+    donor_id: Optional[int] = None
+    age: Optional[int] = Field(default=None, ge=18, le=65)
+    gender: Optional[GenderLiteral] = None
+    blood_group: Optional[BloodGroupLiteral] = None
+    contact: Optional[str] = None
+    address: Optional[str] = None
+    hospital_id: Optional[int] = None
+    blood_bank_id: Optional[int] = None
+
+class VerifyRegistrationOTPRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(min_length=6, max_length=6)
+
+class SendLoginOTPRequest(BaseModel):
+    email: EmailStr
+
+class VerifyLoginOTPRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(min_length=6, max_length=6)
+
+class ResendOTPRequest(BaseModel):
+    email: EmailStr
+    purpose: Literal['registration', 'login'] = 'registration'
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
 
 # Pydantic models for request validation
 class DonorCreate(BaseModel):
@@ -127,10 +247,315 @@ class PatientUpdate(BaseModel):
     ContactNo: Optional[str] = None
     MedicalCondition: Optional[str] = None
     IsActive: Optional[bool] = None
+
 # Health check endpoint
 @app.get("/")
 async def root():
-    return {"message": "Blood Bank Management API is running", "status": "healthy"}
+    return {"message": "Blood Bank Management API is running", "status": "healthy", "version": "2.0.0"}
+
+
+# ==================== AUTHENTICATION ENDPOINTS ====================
+
+@app.post("/api/auth/send-registration-otp")
+async def send_registration_otp(req: SendRegistrationOTPRequest):
+    clean_email = req.email.strip().lower()
+    existing = db.get_user_by_email(clean_email)
+    if existing:
+        raise HTTPException(status_code=400, detail="An account with this email already exists. Please log in.")
+    
+    # Extra validation for Donor fields if provided
+    if req.role == "Donor":
+        if req.contact and len(req.contact.strip()) != 10:
+            raise HTTPException(status_code=400, detail="Donor contact number must be exactly 10 digits.")
+        if req.age and (req.age < 18 or req.age > 65):
+            raise HTTPException(status_code=400, detail="Donor age must be between 18 and 65.")
+
+    payload = req.model_dump()
+    success, msg = OTPService.create_registration_otp(clean_email, payload)
+    if not success:
+        raise HTTPException(status_code=429, detail=msg)
+    
+    return {
+        "success": True,
+        "message": msg,
+        "email": clean_email,
+    }
+
+
+@app.post("/api/auth/verify-registration-otp")
+async def verify_registration_otp(req: VerifyRegistrationOTPRequest):
+    clean_email = req.email.strip().lower()
+    is_valid, payload, err_msg = OTPService.verify_registration_otp(clean_email, req.otp)
+    if not is_valid or not payload:
+        raise HTTPException(status_code=400, detail=err_msg)
+
+    # Check again if user exists to prevent double registration
+    if db.get_user_by_email(clean_email):
+        raise HTTPException(status_code=400, detail="User already registered. Please log in.")
+
+    donor_id = payload.get("donor_id")
+    hospital_id = payload.get("hospital_id")
+    blood_bank_id = payload.get("blood_bank_id")
+    role = payload.get("role", "Donor")
+
+    # If registering as Donor and donor profile not linked, link to existing donor or auto-create Donor record
+    if role == "Donor" and not donor_id:
+        existing_donor = None
+        if clean_email:
+            existing_donor = db.get_donor_by_email(clean_email)
+        if not existing_donor and payload.get("contact"):
+            existing_donor = db.get_donor_by_contact(payload["contact"])
+
+        if existing_donor:
+            donor_id = existing_donor.get("DonorID")
+        elif payload.get("age") and payload.get("blood_group") and payload.get("contact"):
+            donor_id = db.add_donor(
+                name=payload["full_name"],
+                age=payload["age"],
+                gender=payload.get("gender") or 'M',
+                blood_group=payload["blood_group"],
+                contact=payload["contact"],
+                email=clean_email,
+                address=payload.get("address") or ''
+            )
+
+    pwd_hash = hash_password(payload["password"])
+    user_id = db.create_user(
+        full_name=payload["full_name"],
+        email=clean_email,
+        password_hash=pwd_hash,
+        role=role,
+        donor_id=donor_id,
+        hospital_id=hospital_id,
+        blood_bank_id=blood_bank_id
+    )
+
+    if not user_id:
+        raise HTTPException(status_code=500, detail="Failed to create user account in database.")
+
+    token = create_access_token({"sub": user_id, "role": role, "email": clean_email})
+    return {
+        "success": True,
+        "message": "Account created and verified successfully!",
+        "token": token,
+        "user": {
+            "id": user_id,
+            "name": payload["full_name"],
+            "email": clean_email,
+            "role": role,
+            "donor_id": donor_id,
+            "hospital_id": hospital_id,
+            "blood_bank_id": blood_bank_id
+        }
+    }
+
+
+@app.post("/api/auth/send-login-otp")
+async def send_login_otp(req: SendLoginOTPRequest):
+    clean_email = req.email.strip().lower()
+    user = db.get_user_by_email(clean_email)
+    if not user:
+        raise HTTPException(status_code=404, detail="No account registered with this email address.")
+    
+    success, msg = OTPService.create_login_otp(clean_email, user["FullName"])
+    if not success:
+        raise HTTPException(status_code=429, detail=msg)
+    
+    return {
+        "success": True,
+        "message": msg,
+        "email": clean_email
+    }
+
+
+@app.post("/api/auth/verify-login-otp")
+async def verify_login_otp(req: VerifyLoginOTPRequest):
+    clean_email = req.email.strip().lower()
+    is_valid, msg = OTPService.verify_login_otp(clean_email, req.otp)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=msg)
+    
+    user = db.get_user_by_email(clean_email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User account not found.")
+
+    token = create_access_token({"sub": user["UserID"], "role": user["Role"], "email": user["Email"]})
+    return {
+        "success": True,
+        "message": "Logged in successfully via OTP!",
+        "token": token,
+        "user": {
+            "id": user["UserID"],
+            "name": user["FullName"],
+            "email": user["Email"],
+            "role": user["Role"],
+            "donor_id": user.get("DonorID"),
+            "hospital_id": user.get("HospitalID"),
+            "blood_bank_id": user.get("BloodBankID")
+        }
+    }
+
+
+@app.post("/api/auth/resend-otp")
+async def resend_otp(req: ResendOTPRequest):
+    clean_email = req.email.strip().lower()
+    if req.purpose == "login":
+        user = db.get_user_by_email(clean_email)
+        if not user:
+            raise HTTPException(status_code=404, detail="No account found with this email.")
+        success, msg = OTPService.create_login_otp(clean_email, user["FullName"])
+    else:
+        # registration
+        record = _otp_store.get(clean_email)
+        if not record or record.get("purpose") != "registration":
+            raise HTTPException(status_code=400, detail="No pending registration session found. Please re-fill registration form.")
+        payload = record["payload"]
+        success, msg = OTPService.create_registration_otp(clean_email, payload)
+    
+    if not success:
+        raise HTTPException(status_code=429, detail=msg)
+    
+    return {"success": True, "message": msg, "email": clean_email}
+
+
+@app.post("/api/auth/register")
+async def register(user_data: UserRegister):
+    clean_email = user_data.email.strip().lower()
+    existing = db.get_user_by_email(clean_email)
+    if existing:
+        raise HTTPException(status_code=400, detail="User with this email already exists")
+
+    donor_id = user_data.donor_id
+    hospital_id = user_data.hospital_id
+    blood_bank_id = user_data.blood_bank_id
+
+    # If registering as Donor and donor profile not linked, link to existing donor or auto-create Donor record
+    if user_data.role == "Donor" and not donor_id:
+        existing_donor = None
+        if clean_email:
+            existing_donor = db.get_donor_by_email(clean_email)
+        if not existing_donor and user_data.contact:
+            existing_donor = db.get_donor_by_contact(user_data.contact)
+
+        if existing_donor:
+            donor_id = existing_donor.get("DonorID")
+        elif user_data.age and user_data.blood_group and user_data.contact:
+            donor_id = db.add_donor(
+                name=user_data.full_name,
+                age=user_data.age,
+                gender=user_data.gender or 'M',
+                blood_group=user_data.blood_group,
+                contact=user_data.contact,
+                email=clean_email,
+                address=user_data.address or ''
+            )
+
+    pwd_hash = hash_password(user_data.password)
+    user_id = db.create_user(
+        full_name=user_data.full_name,
+        email=clean_email,
+        password_hash=pwd_hash,
+        role=user_data.role,
+        donor_id=donor_id,
+        hospital_id=hospital_id,
+        blood_bank_id=blood_bank_id
+    )
+
+    if not user_id:
+        raise HTTPException(status_code=500, detail="Failed to create user account")
+
+    token = create_access_token({"sub": user_id, "role": user_data.role, "email": clean_email})
+    return {
+        "success": True,
+        "token": token,
+        "user": {
+            "id": user_id,
+            "name": user_data.full_name,
+            "email": clean_email,
+            "role": user_data.role,
+            "donor_id": donor_id,
+            "hospital_id": hospital_id,
+            "blood_bank_id": blood_bank_id
+        }
+    }
+
+
+@app.post("/api/auth/login")
+async def login(credentials: UserLogin):
+    clean_email = credentials.email.strip().lower()
+    user = db.get_user_by_email(clean_email)
+    if not user or not verify_password(credentials.password, user["PasswordHash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    token = create_access_token({"sub": user["UserID"], "role": user["Role"], "email": user["Email"]})
+    return {
+        "success": True,
+        "token": token,
+        "user": {
+            "id": user["UserID"],
+            "name": user["FullName"],
+            "email": user["Email"],
+            "role": user["Role"],
+            "donor_id": user.get("DonorID"),
+            "hospital_id": user.get("HospitalID"),
+            "blood_bank_id": user.get("BloodBankID")
+        }
+    }
+
+
+@app.get("/api/auth/me")
+async def get_me(user: dict = Depends(require_auth)):
+    user_copy = dict(user)
+    user_copy.pop("PasswordHash", None)
+    
+    # Enrich with linked donor or hospital info if present
+    donor_info = None
+    if user.get("DonorID"):
+        donor_info = db.get_donor_by_id(user["DonorID"])
+        if donor_info:
+            donor_info["eligibility"] = db.check_donor_eligibility(user["DonorID"])
+    
+    return {
+        "success": True,
+        "user": user_copy,
+        "donor_profile": donor_info
+    }
+
+
+@app.post("/api/auth/logout")
+async def logout():
+    return {"success": True, "message": "Successfully logged out"}
+
+
+# ==================== DONOR SELF-SERVICE PORTAL ====================
+
+@app.get("/api/donor/portal-data")
+async def get_donor_portal_data(user: dict = Depends(require_auth)):
+    donor_id = user.get("DonorID")
+    donor_info = None
+    history = []
+    eligibility = "Register as a donor to check eligibility"
+
+    if donor_id:
+        donor_info = db.get_donor_by_id(donor_id)
+        eligibility = db.check_donor_eligibility(donor_id)
+        # Fetch donations made by this donor
+        history_query = """
+        SELECT bu.UnitID, bu.BloodGroup, bu.Component, bu.CollectionDate, bu.ExpirationDate, bu.Status, bb.BloodBankName, bb.Location
+        FROM BloodUnit bu
+        JOIN BloodBank bb ON bu.BloodBankID = bb.BloodBankID
+        WHERE bu.DonorID = %s
+        ORDER BY bu.CollectionDate DESC
+        """
+        history = db.fetch_query(history_query, (donor_id,))
+    
+    return {
+        "success": True,
+        "donor": donor_info,
+        "eligibility": eligibility,
+        "donation_history": history,
+        "bloodbanks": db.get_all_blood_banks()
+    }
 
 
 # ==================== DONOR ENDPOINTS ====================
@@ -340,7 +765,7 @@ async def get_all_requests():
 
 
 @app.post("/api/requests")
-async def create_request(request: RequestCreate):
+async def create_request(request: RequestCreate, background_tasks: BackgroundTasks):
     request_id = db.create_request(
         patient_id=request.patient_id,
         blood_bank_id=request.blood_bank_id,
@@ -348,7 +773,41 @@ async def create_request(request: RequestCreate):
     )
     if not request_id:
         raise HTTPException(status_code=400, detail="Failed to create request")
-    return {"success": True, "message": "Request created successfully", "request_id": request_id}
+
+    # Fetch patient & hospital context for decoupled emergency alert queue
+    patient = db.get_patient_by_id(request.patient_id)
+    hospital_name = "Emergency Healthcare Facility"
+    if patient and patient.get("HospitalID"):
+        hosp = db.get_hospital_by_id(patient["HospitalID"])
+        if hosp:
+            hospital_name = hosp.get("HospitalName", hospital_name)
+
+    bank = db.get_blood_bank_by_id(request.blood_bank_id)
+    bank_name = bank.get("BloodBankName", "Blood Bank") if bank else "Blood Bank"
+
+    # Enqueue emergency notification job into message queue
+    job_payload = {
+        "request_id": request_id,
+        "patient_id": request.patient_id,
+        "patient_name": patient.get("PatientName", "Urgent Patient") if patient else "Urgent Patient",
+        "blood_group": patient.get("BloodGroupRequired", "O+") if patient else "O+",
+        "hospital_name": hospital_name,
+        "blood_bank_id": request.blood_bank_id,
+        "blood_bank_name": bank_name,
+        "required_units": request.required_units
+    }
+    job_id = message_queue.enqueue_alert(job_payload)
+
+    # Dispatch asynchronous worker task without blocking HTTP response
+    background_tasks.add_task(message_queue.process_emergency_job, job_payload, db)
+
+    return {
+        "success": True,
+        "message": "Emergency request created & queued via Message Queue",
+        "request_id": request_id,
+        "job_id": job_id,
+        "queue_broker": "Redis 7.0" if message_queue.is_redis_active() else "FastAPI Async Worker"
+    }
 
 
 @app.put("/api/requests/{request_id}")
@@ -518,6 +977,20 @@ async def get_dashboard_stats():
             "requests": db.get_request_statistics()
         }
     }
+
+
+# ==================== MESSAGE QUEUE & NOTIFICATIONS ENDPOINTS ====================
+
+
+@app.get("/api/notifications/queue-status")
+async def get_queue_status():
+    return {"success": True, "telemetry": message_queue.get_queue_telemetry()}
+
+
+@app.get("/api/notifications/recent")
+async def get_recent_notifications(limit: int = 15):
+    broadcasts = message_queue.get_recent_broadcasts(limit=limit)
+    return {"success": True, "data": broadcasts, "count": len(broadcasts)}
 
 
 # Run the server

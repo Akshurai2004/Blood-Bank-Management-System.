@@ -1,7 +1,10 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Heart, Users, Building2, Droplet, AlertCircle } from 'lucide-react'
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { Heart, Users, Building2, Droplet, AlertCircle, Shield, LogIn, LogOut, CheckCircle, Clock, Award, FileText, UserPlus, RefreshCw, MapPin, Compass } from 'lucide-react';
+import LiveNetworkMap from './LiveNetworkMap';
+import 'leaflet/dist/leaflet.css';
+
 const ENV_API_BASE = (process.env.REACT_APP_API_URL || '').trim().replace(/\/$/, '');
-const DEFAULT_API_BASE = 'http://localhost:8000/api';
+const DEFAULT_API_BASE = process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api';
 
 const buildApiUrl = (path) => {
   const base = ENV_API_BASE || DEFAULT_API_BASE;
@@ -182,7 +185,46 @@ const BloodBankManagement = () => {
     }
   }
 
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [auth, setAuth] = useState(() => {
+    try {
+      const saved = localStorage.getItem('bb_auth');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+  const [authMode, setAuthMode] = useState('login'); // 'login' | 'register'
+  const [loginMethod, setLoginMethod] = useState('password'); // 'password' | 'otp'
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [loginOtp, setLoginOtp] = useState('');
+  const [loginOtpSent, setLoginOtpSent] = useState(false);
+
+  const [registerForm, setRegisterForm] = useState({
+    full_name: '', email: '', password: '', role: 'Donor', age: '', gender: 'M', blood_group: 'A+', contact: '', address: '', hospital_id: '', blood_bank_id: ''
+  });
+  const [registerStep, setRegisterStep] = useState('form'); // 'form' | 'otp'
+  const [registerOtp, setRegisterOtp] = useState('');
+  const [otpTimer, setOtpTimer] = useState(0);
+
+  const [donorPortalData, setDonorPortalData] = useState({
+    donor: null, eligibility: '', donation_history: [], bloodbanks: []
+  });
+  const [donorPortalLoading, setDonorPortalLoading] = useState(false);
+  const [queueStatus, setQueueStatus] = useState(null);
+  const [recentBroadcasts, setRecentBroadcasts] = useState([]);
+
+  const [activeTab, setActiveTab] = useState(() => {
+    const saved = localStorage.getItem('bb_auth');
+    if (saved) {
+      try {
+        const u = JSON.parse(saved)?.user;
+        if (u?.role === 'Donor') return 'donor-portal';
+        if (u?.role === 'Hospital') return 'requests';
+      } catch (e) {}
+    }
+    return 'dashboard';
+  });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState(''); // 'success' or 'error'
@@ -364,8 +406,348 @@ const BloodBankManagement = () => {
     showMessage(errMsg, 'error');
   };
 
+  const saveAuth = (authData) => {
+    setAuth(authData);
+    if (authData) {
+      localStorage.setItem('bb_auth', JSON.stringify(authData));
+    } else {
+      localStorage.removeItem('bb_auth');
+    }
+  };
+
+  // Countdown timer for OTP resend cooldown
+  useEffect(() => {
+    let interval = null;
+    if (otpTimer > 0) {
+      interval = setInterval(() => {
+        setOtpTimer(prev => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [otpTimer]);
+
+  const handleLoginSubmit = async (e) => {
+    if (e) e.preventDefault();
+    setLoading(true);
+    try {
+      const res = await request('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: loginForm.email.trim(),
+          password: loginForm.password
+        })
+      });
+      if (res.success) {
+        saveAuth(res);
+        loadAllData();
+        showMessage(`Welcome back, ${res.user.name}!`, 'success');
+        setShowAuthModal(false);
+        if (res.user.role === 'Donor') {
+          setActiveTab('donor-portal');
+        } else if (res.user.role === 'Hospital') {
+          setActiveTab('requests');
+        } else {
+          setActiveTab('dashboard');
+        }
+      }
+    } catch (err) {
+      handleApiError(err, 'Login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSendLoginOTP = async (e) => {
+    if (e) e.preventDefault();
+    const cleanEmail = loginForm.email.trim();
+    if (!cleanEmail) {
+      showMessage('Please enter your email address.', 'error');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await request('/auth/send-login-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail })
+      });
+      if (res.success) {
+        setLoginOtpSent(true);
+        setLoginOtp('');
+        setOtpTimer(60);
+        showMessage(`Verification code sent to ${cleanEmail}! Please check your email.`, 'success');
+      }
+    } catch (err) {
+      handleApiError(err, 'Failed to send login code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyLoginOTP = async (e) => {
+    if (e) e.preventDefault();
+    const cleanOtp = loginOtp.trim();
+    if (!cleanOtp || cleanOtp.length !== 6) {
+      showMessage('Please enter the 6-digit verification code sent to your email.', 'error');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await request('/auth/verify-login-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: loginForm.email.trim(),
+          otp: cleanOtp
+        })
+      });
+      if (res.success) {
+        saveAuth(res);
+        loadAllData();
+        showMessage(`Welcome back, ${res.user.name}!`, 'success');
+        setShowAuthModal(false);
+        setLoginOtpSent(false);
+        setLoginOtp('');
+        if (res.user.role === 'Donor') {
+          setActiveTab('donor-portal');
+        } else if (res.user.role === 'Hospital') {
+          setActiveTab('requests');
+        } else {
+          setActiveTab('dashboard');
+        }
+      }
+    } catch (err) {
+      handleApiError(err, 'OTP verification failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendLoginOTP = async () => {
+    if (otpTimer > 0) return;
+    setLoading(true);
+    try {
+      const res = await request('/auth/resend-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: loginForm.email.trim(), purpose: 'login' })
+      });
+      if (res.success) {
+        setLoginOtp('');
+        setOtpTimer(60);
+        showMessage(`New verification code sent to ${loginForm.email.trim()}! Please check your email.`, 'success');
+      }
+    } catch (err) {
+      handleApiError(err, 'Failed to resend code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSendRegisterOTP = async (e) => {
+    if (e) e.preventDefault();
+    
+    // Client-side validations
+    if (!registerForm.full_name || registerForm.full_name.trim().length < 2) {
+      showMessage('Please enter your full name.', 'error');
+      return;
+    }
+    if (!registerForm.email || !registerForm.email.includes('@')) {
+      showMessage('Please enter a valid email address.', 'error');
+      return;
+    }
+    if (!registerForm.password || registerForm.password.length < 6) {
+      showMessage('Password must be at least 6 characters.', 'error');
+      return;
+    }
+
+    if (registerForm.role === 'Donor') {
+      if (registerForm.age && (parseInt(registerForm.age, 10) < 18 || parseInt(registerForm.age, 10) > 65)) {
+        showMessage('Donor age must be between 18 and 65 years.', 'error');
+        return;
+      }
+      if (registerForm.contact && registerForm.contact.replace(/\D/g, '').length !== 10) {
+        showMessage('Contact number must be exactly 10 digits.', 'error');
+        return;
+      }
+    }
+
+    setLoading(true);
+    try {
+      const payload = {
+        full_name: registerForm.full_name.trim(),
+        email: registerForm.email.trim().toLowerCase(),
+        password: registerForm.password,
+        role: registerForm.role
+      };
+
+      if (registerForm.role === 'Donor') {
+        if (registerForm.age) {
+          payload.age = parseInt(registerForm.age, 10);
+        }
+        if (registerForm.gender) payload.gender = registerForm.gender;
+        if (registerForm.blood_group) payload.blood_group = registerForm.blood_group;
+        if (registerForm.contact && registerForm.contact.trim()) payload.contact = registerForm.contact.trim();
+        if (registerForm.address && registerForm.address.trim()) payload.address = registerForm.address.trim();
+      }
+      if (registerForm.role === 'Hospital' && registerForm.hospital_id) {
+        payload.hospital_id = parseInt(registerForm.hospital_id, 10);
+      }
+      if (registerForm.role === 'Admin' && registerForm.blood_bank_id) {
+        payload.blood_bank_id = parseInt(registerForm.blood_bank_id, 10);
+      }
+
+      const res = await request('/auth/send-registration-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.success) {
+        setRegisterStep('otp');
+        setRegisterOtp('');
+        setOtpTimer(60);
+        showMessage(`Verification code sent to ${registerForm.email.trim()}! Please check your email.`, 'success');
+      }
+    } catch (err) {
+      handleApiError(err, 'Failed to send registration verification code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyRegisterOTP = async (e) => {
+    if (e) e.preventDefault();
+    const cleanOtp = registerOtp.trim();
+    if (!cleanOtp || cleanOtp.length !== 6) {
+      showMessage('Please enter the 6-digit verification code sent to your email.', 'error');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await request('/auth/verify-registration-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: registerForm.email.trim(),
+          otp: cleanOtp
+        })
+      });
+
+      if (res.success) {
+        saveAuth(res);
+        loadAllData();
+        showMessage(`Account verified and registered! Welcome, ${res.user.name}!`, 'success');
+        setShowAuthModal(false);
+        setRegisterStep('form');
+        setRegisterOtp('');
+        if (res.user.role === 'Donor') {
+          setActiveTab('donor-portal');
+        } else if (res.user.role === 'Hospital') {
+          setActiveTab('requests');
+        } else {
+          setActiveTab('dashboard');
+        }
+      }
+    } catch (err) {
+      handleApiError(err, 'Registration verification failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendRegisterOTP = async () => {
+    if (otpTimer > 0) return;
+    setLoading(true);
+    try {
+      const res = await request('/auth/resend-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: registerForm.email.trim(),
+          purpose: 'registration'
+        })
+      });
+      if (res.success) {
+        setRegisterOtp('');
+        setOtpTimer(60);
+        showMessage(`New registration code sent to ${registerForm.email.trim()}! Please check your email.`, 'success');
+      }
+    } catch (err) {
+      handleApiError(err, 'Failed to resend code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await request('/auth/logout', { method: 'POST' });
+    } catch (e) {}
+    saveAuth(null);
+    showMessage('Logged out successfully', 'success');
+    setActiveTab('dashboard');
+  };
+
+  const handleQuickDemoLogin = (email, password) => {
+    setLoginForm({ email, password });
+    setLoading(true);
+    fetch(buildApiUrl('/auth/login'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    })
+      .then(res => res.json())
+      .then(res => {
+        if (res.success) {
+          saveAuth(res);
+          loadAllData();
+          showMessage(`Logged in as ${res.user.name} (${res.user.role})`, 'success');
+          setShowAuthModal(false);
+          if (res.user.role === 'Donor') {
+            setActiveTab('donor-portal');
+          } else if (res.user.role === 'Hospital') {
+            setActiveTab('requests');
+          } else {
+            setActiveTab('dashboard');
+          }
+        } else {
+          showMessage(res.detail || 'Demo login failed', 'error');
+        }
+      })
+      .catch(err => {
+        handleApiError(err, 'Demo login failed');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  };
+
+  const fetchDonorPortal = async () => {
+    const token = auth?.token || (localStorage.getItem('bb_auth') ? JSON.parse(localStorage.getItem('bb_auth')).token : null);
+    if (!token) return;
+    setDonorPortalLoading(true);
+    try {
+      const data = await request('/donor/portal-data');
+      if (data.success) {
+        setDonorPortalData(data);
+      }
+    } catch (e) {
+      console.error('Error fetching donor portal data:', e);
+    } finally {
+      setDonorPortalLoading(false);
+    }
+  };
+
   const request = async (path, options = {}) => {
-    const response = await fetch(buildApiUrl(path), options);
+    const token = auth?.token || (localStorage.getItem('bb_auth') ? JSON.parse(localStorage.getItem('bb_auth')).token : null);
+    const headers = {
+      ...(options.headers || {}),
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+    };
+    const response = await fetch(buildApiUrl(path), { ...options, headers });
     let data = null;
     try {
       data = await response.json();
@@ -374,11 +756,35 @@ const BloodBankManagement = () => {
     }
 
     if (!response.ok) {
-      const detail = data?.detail || data?.message || `Request failed with status ${response.status}`;
+      if ((response.status === 401 || response.status === 403) && !path.includes('/auth/')) {
+        saveAuth(null);
+        showMessage('Session expired or access denied. Please log in again.', 'error');
+        setActiveTab('dashboard');
+      }
+      let detail = `Request failed with status ${response.status}`;
+      if (typeof data?.detail === 'string') {
+        detail = data.detail;
+      } else if (Array.isArray(data?.detail)) {
+        detail = data.detail.map(d => d.msg || JSON.stringify(d)).join(', ');
+      } else if (data?.message) {
+        detail = data.message;
+      }
       throw new Error(detail);
     }
 
     return data;
+  };
+
+  const fetchQueueTelemetry = async () => {
+    try {
+      const res = await request('/notifications/queue-status');
+      if (res.success) {
+        setQueueStatus(res.telemetry);
+        setRecentBroadcasts(res.telemetry?.recent_broadcasts || []);
+      }
+    } catch (e) {
+      console.warn('Queue telemetry error:', e);
+    }
   };
 
   async function fetchDonors() {
@@ -462,31 +868,64 @@ const BloodBankManagement = () => {
     }
   }
 
+  const loadAllData = useCallback(async () => {
+    try {
+      await Promise.allSettled([
+        fetchDonors(),
+        fetchBloodBanks(),
+        fetchHospitals(),
+        fetchPatients(),
+        fetchInventory(),
+        fetchRequests(),
+        fetchStatistics(),
+        fetchBloodUnits(),
+        fetchAllocations(),
+        fetchQueueTelemetry()
+      ]);
+    } catch (error) {
+      console.error('Error during data fetch:', error);
+    }
+  }, []);
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const loadAllData = async () => {
-      try {
-        await Promise.all([
-          fetchDonors(),
-          fetchBloodBanks(),
-          fetchHospitals(),
-          fetchPatients(),
-          fetchInventory(),
-          fetchRequests(),
-          fetchStatistics(),
-          fetchBloodUnits(),
-          fetchAllocations()
-        ]);
-      } catch (error) {
-        console.error('Error during bulk fetch:', error);
+    const verifySessionAndLoad = async () => {
+      const stored = localStorage.getItem('bb_auth');
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          if (parsed?.token) {
+            const res = await fetch(buildApiUrl('/auth/me'), {
+              headers: { 'Authorization': `Bearer ${parsed.token}` }
+            });
+            if (res.ok) {
+              const meData = await res.json();
+              if (meData?.success && meData?.user) {
+                saveAuth({ ...parsed, user: meData.user });
+              }
+            } else {
+              console.warn('Stored token is invalid/expired. Resetting auth session.');
+              saveAuth(null);
+            }
+          } else {
+            saveAuth(null);
+          }
+        } catch (e) {
+          saveAuth(null);
+        }
       }
+
+      await loadAllData();
     };
 
-    loadAllData();
-    // Remove auto-refresh interval to prevent input field focus loss
-    // const interval = setInterval(loadAllData, 5000); // Refresh every 5 seconds
-    // return () => clearInterval(interval);
-  }, []);
+    verifySessionAndLoad();
+  }, [loadAllData]);
+
+  useEffect(() => {
+    if (activeTab === 'donor-portal' && auth?.token) {
+      fetchDonorPortal();
+    }
+  }, [activeTab, auth?.token]);
 
   useEffect(() => () => {
     if (messageTimerRef.current) {
@@ -1436,6 +1875,55 @@ const BloodBankManagement = () => {
       <div className="requests-container">
         <h2 className="section-title">Blood Requests</h2>
 
+        {/* Live Message Queue Telemetry Panel */}
+        <div className="card" style={{ borderLeft: '4px solid #8b5cf6', background: '#faf5ff', marginBottom: '20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '1.3rem' }}>⚡</span>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: '#6b21a8' }}>
+                  Asynchronous Emergency Alert Queue
+                </h3>
+                <p style={{ margin: '2px 0 0 0', fontSize: '0.82rem', color: '#7e22ce' }}>
+                  Decoupled background worker broadcasts high-priority alerts to matching donors without blocking HTTP requests.
+                </p>
+              </div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <span className="status-badge" style={{ background: '#f3e8ff', color: '#6b21a8', fontWeight: 700, border: '1px solid #d8b4fe' }}>
+                Broker: {queueStatus?.broker || 'Redis 7.0 (Active)'}
+              </span>
+            </div>
+          </div>
+
+          {recentBroadcasts && recentBroadcasts.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+              <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#6b21a8', textTransform: 'uppercase' }}>
+                Recent Background Dispatches:
+              </div>
+              {recentBroadcasts.slice(0, 3).map((bc, idx) => (
+                <div key={idx} style={{ background: '#ffffff', padding: '8px 12px', borderRadius: '6px', border: '1px solid #e9d5ff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <span style={{ fontWeight: 700, color: '#991b1b' }}>🚨 Urgent {bc.blood_group}</span> for <strong>{bc.patient_name}</strong> at <em>{bc.hospital_name}</em>
+                    <div style={{ fontSize: '0.78rem', color: '#6b7280', marginTop: '2px' }}>
+                      Compatible Groups: {bc.compatible_groups?.join(', ')} | Latency: {bc.processing_time_ms}ms
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <span className="status-badge fulfilled" style={{ fontSize: '0.8rem' }}>
+                      ✓ {bc.notified_count} Donors Alerted
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: '0.82rem', color: '#6b7280', fontStyle: 'italic', marginTop: '6px' }}>
+              Ready. When an emergency blood request is submitted, compatible donors will be matched and alerted asynchronously.
+            </div>
+          )}
+        </div>
+
         <div className="card">
           <h3 className="section-title" style={{ marginTop: 0 }}>Create New Request</h3>
           <form onSubmit={handleCreateRequest}>
@@ -1884,6 +2372,619 @@ const BloodBankManagement = () => {
     );
   }, [donationForm, donors, bloodBanks, components, loading, handleRecordDonation, allocationForm, requests, bloodUnits, handleAllocateBlood, hospitalForm, handleAddHospital, bloodBankForm, handleAddBloodBank, inventory, allocations]);
 
+  // Donor Portal View
+  const DonorPortalView = (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <div>
+          <h2 className="section-title" style={{ margin: 0 }}>Welcome to Your Donor Portal</h2>
+          <p style={{ color: '#6b7280', margin: '4px 0 0 0' }}>Manage your profile, view medical eligibility, and review donation history</p>
+        </div>
+        <button className="button" onClick={fetchDonorPortal} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <RefreshCw size={16} /> Refresh
+        </button>
+      </div>
+
+      {donorPortalLoading ? (
+        <p style={{ textAlign: 'center', color: '#6b7280' }}>Loading your donor records...</p>
+      ) : (
+        <>
+          {/* Eligibility Box */}
+          <div className={`eligibility-alert ${donorPortalData.eligibility?.includes('ELIGIBLE') && !donorPortalData.eligibility?.includes('NOT') ? 'eligible' : 'not-eligible'}`}>
+            <Award size={24} />
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '1.05rem' }}>Donation Eligibility Status</div>
+              <div>{donorPortalData.eligibility || 'Check with your local blood center'}</div>
+            </div>
+          </div>
+
+          {/* Donor Stats Grid */}
+          <div className="portal-grid">
+            <div className="card" style={{ borderLeft: '4px solid #dc2626' }}>
+              <div style={{ color: '#6b7280', fontSize: '0.9rem', fontWeight: 600 }}>DONOR DETAILS</div>
+              <div style={{ fontSize: '1.25rem', fontWeight: 700, marginTop: '6px' }}>{auth?.user?.name}</div>
+              <div style={{ color: '#4b5563', marginTop: '4px' }}>Email: {auth?.user?.email}</div>
+              <div style={{ marginTop: '8px' }}>
+                <span className="status-badge" style={{ background: '#fee2e2', color: '#991b1b', fontWeight: 700 }}>
+                  Blood Group: {donorPortalData.donor?.BloodGroup || 'Pending'}
+                </span>
+              </div>
+            </div>
+
+            <div className="card" style={{ borderLeft: '4px solid #16a34a' }}>
+              <div style={{ color: '#6b7280', fontSize: '0.9rem', fontWeight: 600 }}>TOTAL DONATIONS</div>
+              <div className="stat-metric">{donorPortalData.donor?.TotalDonations ?? 0}</div>
+              <div style={{ color: '#4b5563', fontSize: '0.85rem' }}>Units donated to date</div>
+            </div>
+
+            <div className="card" style={{ borderLeft: '4px solid #2563eb' }}>
+              <div style={{ color: '#6b7280', fontSize: '0.9rem', fontWeight: 600 }}>LAST DONATION</div>
+              <div style={{ fontSize: '1.25rem', fontWeight: 700, marginTop: '8px', color: '#1e40af' }}>
+                {donorPortalData.donor?.LastDonationDate || 'First-time donor'}
+              </div>
+              <div style={{ color: '#4b5563', fontSize: '0.85rem', marginTop: '4px' }}>Registered: {donorPortalData.donor?.RegistrationDate?.slice(0, 10) || 'Active'}</div>
+            </div>
+          </div>
+
+          {/* Donation History Table */}
+          <div className="card">
+            <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: '#991b1b', marginBottom: '14px' }}>
+              📜 Your Donation Records
+            </h3>
+            {donorPortalData.donation_history && donorPortalData.donation_history.length > 0 ? (
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Unit ID</th>
+                      <th>Blood Bank</th>
+                      <th>Location</th>
+                      <th>Blood Group</th>
+                      <th>Component</th>
+                      <th>Collection Date</th>
+                      <th>Expiration Date</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {donorPortalData.donation_history.map(item => (
+                      <tr key={item.UnitID}>
+                        <td>#{item.UnitID}</td>
+                        <td style={{ fontWeight: 600 }}>{item.BloodBankName}</td>
+                        <td>{item.Location}</td>
+                        <td><span className="status-badge" style={{ background: '#fee2e2', color: '#991b1b' }}>{item.BloodGroup}</span></td>
+                        <td>{item.Component}</td>
+                        <td>{item.CollectionDate}</td>
+                        <td>{item.ExpirationDate}</td>
+                        <td>
+                          <span className={`status-badge ${item.Status === 'Available' ? 'fulfilled' : item.Status === 'Reserved' ? 'pending' : 'denied'}`}>
+                            {item.Status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p style={{ color: '#6b7280', padding: '12px 0' }}>No past donations found under your profile yet. Visit a nearby blood center to donate!</p>
+            )}
+          </div>
+
+          {/* Nearby Blood Banks */}
+          <div className="card">
+            <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: '#991b1b', marginBottom: '14px' }}>
+              🏥 Authorized Blood Centers
+            </h3>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '14px' }}>
+              {(donorPortalData.bloodbanks || bloodBanks).map(bank => (
+                <div key={bank.BloodBankID} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '14px', background: '#fafafa' }}>
+                  <div style={{ fontWeight: 700, color: '#1f2937' }}>{bank.BloodBankName}</div>
+                  <div style={{ color: '#4b5563', fontSize: '0.9rem', marginTop: '4px' }}>📍 {bank.Location}</div>
+                  <div style={{ color: '#4b5563', fontSize: '0.9rem' }}>📞 {bank.ContactNo}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  // Shared Auth Form UI for both Modal and Gateway
+  const renderAuthForm = (isModal = false) => {
+    return (
+      <div className={isModal ? "auth-container" : "card"} style={isModal ? { margin: 0, position: 'relative', width: '100%' } : { padding: '36px', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)' }}>
+        {isModal && (
+          <button
+            onClick={() => setShowAuthModal(false)}
+            style={{ position: 'absolute', top: '16px', right: '16px', border: 'none', background: 'none', fontSize: '1.2rem', cursor: 'pointer', color: '#6b7280' }}
+          >
+            ✕
+          </button>
+        )}
+
+        <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '56px', height: '56px', borderRadius: '50%', background: '#fee2e2', color: '#dc2626', marginBottom: '12px' }}>
+            <Shield size={28} />
+          </div>
+          <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: '#111827', margin: 0 }}>
+            {authMode === 'login' ? 'Sign In to Portal' : registerStep === 'otp' ? 'Verify Email Address' : 'Create an Account'}
+          </h2>
+          <p style={{ color: '#6b7280', marginTop: '6px', fontSize: '0.92rem' }}>
+            {authMode === 'login' 
+              ? 'Access real-time blood stock, emergency allocations, and donor records'
+              : registerStep === 'otp'
+              ? `Enter the 6-digit verification code sent to ${registerForm.email}`
+              : 'Register as a Donor, Hospital Staff, or Blood Bank Admin'}
+          </p>
+        </div>
+
+        {/* 1-Click Fast Demo Accounts */}
+        {registerStep === 'form' && (
+          <div style={{ marginBottom: '20px', background: '#f8fafc', padding: '14px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+            <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#475569', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Fast 1-Click Demo Sign-In
+            </div>
+            <div className="demo-pills">
+              <button type="button" className="demo-btn" onClick={() => handleQuickDemoLogin('admin@bloodbank.org', 'Admin@123')}>
+                <span>Admin Portal</span>
+                <small>admin@bloodbank.org</small>
+              </button>
+              <button type="button" className="demo-btn" onClick={() => handleQuickDemoLogin('superadmin@bloodbank.org', 'SuperAdmin@123')}>
+                <span>Global Super Admin</span>
+                <small>superadmin@bloodbank.org</small>
+              </button>
+              <button type="button" className="demo-btn" onClick={() => handleQuickDemoLogin('alice@example.com', 'Donor@123')}>
+                <span>Donor Portal</span>
+                <small>alice@example.com</small>
+              </button>
+              <button type="button" className="demo-btn" onClick={() => handleQuickDemoLogin('hospital@citycare.org', 'Hospital@123')}>
+                <span>Hospital Staff</span>
+                <small>hospital@citycare.org</small>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Mode Switcher: Sign In vs Create Account */}
+        {registerStep === 'form' && (
+          <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', marginBottom: '20px' }}>
+            <button
+              type="button"
+              onClick={() => { setAuthMode('login'); setLoginOtpSent(false); }}
+              style={{
+                flex: 1,
+                padding: '10px',
+                border: 'none',
+                background: 'none',
+                fontWeight: 700,
+                cursor: 'pointer',
+                fontSize: '0.95rem',
+                color: authMode === 'login' ? '#991b1b' : '#6b7280',
+                borderBottom: authMode === 'login' ? '2px solid #991b1b' : 'none'
+              }}
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              onClick={() => { setAuthMode('register'); setRegisterStep('form'); }}
+              style={{
+                flex: 1,
+                padding: '10px',
+                border: 'none',
+                background: 'none',
+                fontWeight: 700,
+                cursor: 'pointer',
+                fontSize: '0.95rem',
+                color: authMode === 'register' ? '#991b1b' : '#6b7280',
+                borderBottom: authMode === 'register' ? '2px solid #991b1b' : 'none'
+              }}
+            >
+              Create Account (with Email OTP)
+            </button>
+          </div>
+        )}
+
+        {authMode === 'login' ? (
+          <div>
+            {/* Login Method Sub-Toggle */}
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+              <button
+                type="button"
+                onClick={() => { setLoginMethod('password'); setLoginOtpSent(false); }}
+                style={{
+                  flex: 1,
+                  padding: '7px 12px',
+                  borderRadius: '6px',
+                  border: loginMethod === 'password' ? '1px solid #991b1b' : '1px solid #d1d5db',
+                  background: loginMethod === 'password' ? '#fee2e2' : '#ffffff',
+                  color: loginMethod === 'password' ? '#991b1b' : '#4b5563',
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Password Login
+              </button>
+              <button
+                type="button"
+                onClick={() => setLoginMethod('otp')}
+                style={{
+                  flex: 1,
+                  padding: '7px 12px',
+                  borderRadius: '6px',
+                  border: loginMethod === 'otp' ? '1px solid #991b1b' : '1px solid #d1d5db',
+                  background: loginMethod === 'otp' ? '#fee2e2' : '#ffffff',
+                  color: loginMethod === 'otp' ? '#991b1b' : '#4b5563',
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Email OTP Login
+              </button>
+            </div>
+
+            {loginMethod === 'password' ? (
+              <form onSubmit={handleLoginSubmit}>
+                <div style={{ marginBottom: '14px' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '5px', color: '#374151' }}>Email Address</label>
+                  <input
+                    type="email"
+                    value={loginForm.email}
+                    onChange={e => setLoginForm(prev => ({ ...prev, email: e.target.value }))}
+                    placeholder="e.g. admin@bloodbank.org"
+                    required
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+                  />
+                </div>
+                <div style={{ marginBottom: '20px' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '5px', color: '#374151' }}>Password</label>
+                  <input
+                    type="password"
+                    value={loginForm.password}
+                    onChange={e => setLoginForm(prev => ({ ...prev, password: e.target.value }))}
+                    placeholder="••••••••"
+                    required
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+                  />
+                </div>
+                <button type="submit" className="button" disabled={loading} style={{ width: '100%', padding: '11px', fontSize: '0.95rem', fontWeight: 700 }}>
+                  {loading ? 'Authenticating...' : 'Sign In'}
+                </button>
+              </form>
+            ) : !loginOtpSent ? (
+              <form onSubmit={handleSendLoginOTP}>
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '5px', color: '#374151' }}>Registered Email Address</label>
+                  <input
+                    type="email"
+                    value={loginForm.email}
+                    onChange={e => setLoginForm(prev => ({ ...prev, email: e.target.value }))}
+                    placeholder="e.g. alice@example.com"
+                    required
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+                  />
+                  <small style={{ color: '#6b7280', fontSize: '0.8rem', marginTop: '4px', display: 'block' }}>
+                    We will send a 6-digit one-time code to your email for passwordless login.
+                  </small>
+                </div>
+                <button type="submit" className="button" disabled={loading} style={{ width: '100%', padding: '11px', fontSize: '0.95rem', fontWeight: 700 }}>
+                  {loading ? 'Sending Code...' : 'Send Login OTP'}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleVerifyLoginOTP}>
+                <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px 14px', marginBottom: '18px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '0.85rem', color: '#166534', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                    <span>📧</span> Verification code dispatched!
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: '#15803d', marginTop: '4px' }}>
+                    Check your inbox at <strong>{loginForm.email}</strong> and enter the 6-digit code below.
+                  </div>
+                </div>
+                <div style={{ marginBottom: '18px' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '6px', color: '#374151', textAlign: 'center' }}>
+                    Enter 6-Digit Login Code
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    value={loginOtp}
+                    onChange={e => setLoginOtp(e.target.value.replace(/\D/g, ''))}
+                    placeholder="••••••"
+                    required
+                    autoFocus
+                    style={{ width: '100%', padding: '12px', fontSize: '1.5rem', fontWeight: 700, letterSpacing: '8px', textAlign: 'center', fontFamily: 'monospace', borderRadius: '6px', border: '2px solid #dc2626' }}
+                  />
+                </div>
+                <button type="submit" className="button" disabled={loading || loginOtp.length !== 6} style={{ width: '100%', padding: '11px', fontSize: '0.95rem', fontWeight: 700, marginBottom: '12px' }}>
+                  {loading ? 'Verifying...' : 'Verify & Sign In'}
+                </button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={handleResendLoginOTP}
+                    disabled={otpTimer > 0 || loading}
+                    style={{ background: 'none', border: 'none', color: otpTimer > 0 ? '#9ca3af' : '#991b1b', fontSize: '0.85rem', fontWeight: 600, cursor: otpTimer > 0 ? 'default' : 'pointer' }}
+                  >
+                    {otpTimer > 0 ? `Resend code in ${otpTimer}s` : 'Resend Code'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setLoginOtpSent(false); setLoginOtp(''); }}
+                    style={{ background: 'none', border: 'none', color: '#4b5563', fontSize: '0.85rem', cursor: 'pointer' }}
+                  >
+                    ← Change Email
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        ) : registerStep === 'form' ? (
+          <form onSubmit={handleSendRegisterOTP}>
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '4px', color: '#374151' }}>Full Name *</label>
+              <input
+                type="text"
+                value={registerForm.full_name}
+                onChange={e => setRegisterForm(prev => ({ ...prev, full_name: e.target.value }))}
+                placeholder="Jane Doe"
+                required
+                style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+              />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '4px', color: '#374151' }}>Email Address *</label>
+                <input
+                  type="email"
+                  value={registerForm.email}
+                  onChange={e => setRegisterForm(prev => ({ ...prev, email: e.target.value }))}
+                  placeholder="user@example.com"
+                  required
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+                />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '4px', color: '#374151' }}>Password * (Min 6)</label>
+                <input
+                  type="password"
+                  value={registerForm.password}
+                  onChange={e => setRegisterForm(prev => ({ ...prev, password: e.target.value }))}
+                  placeholder="••••••••"
+                  minLength={6}
+                  required
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+                />
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '4px', color: '#374151' }}>Role *</label>
+              <select
+                value={registerForm.role}
+                onChange={e => setRegisterForm(prev => ({ ...prev, role: e.target.value }))}
+                style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+              >
+                <option value="Donor">Donor (Self-Service Profile & Eligibility)</option>
+                <option value="Hospital">Hospital Staff (Emergency Blood Requests)</option>
+                <option value="Admin">Blood Bank Admin (Inventory & Management)</option>
+              </select>
+            </div>
+
+            {registerForm.role === 'Donor' && (
+              <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '6px', marginBottom: '14px', border: '1px solid #e2e8f0' }}>
+                <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#991b1b', marginBottom: '8px' }}>Donor Profile Details (for automated eligibility)</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', marginBottom: '8px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: '#475569' }}>Age (18-65)</label>
+                    <input
+                      type="number"
+                      min="18"
+                      max="65"
+                      placeholder="25"
+                      value={registerForm.age}
+                      onChange={e => setRegisterForm(prev => ({ ...prev, age: e.target.value }))}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #d1d5db' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: '#475569' }}>Gender</label>
+                    <select
+                      value={registerForm.gender}
+                      onChange={e => setRegisterForm(prev => ({ ...prev, gender: e.target.value }))}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #d1d5db' }}
+                    >
+                      <option value="M">Male</option>
+                      <option value="F">Female</option>
+                      <option value="O">Other</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: '#475569' }}>Blood Group</label>
+                    <select
+                      value={registerForm.blood_group}
+                      onChange={e => setRegisterForm(prev => ({ ...prev, blood_group: e.target.value }))}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #d1d5db' }}
+                    >
+                      {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map(bg => (
+                        <option key={bg} value={bg}>{bg}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: '#475569' }}>10-Digit Contact</label>
+                    <input
+                      type="text"
+                      maxLength={10}
+                      placeholder="9876543210"
+                      value={registerForm.contact}
+                      onChange={e => setRegisterForm(prev => ({ ...prev, contact: e.target.value.replace(/\D/g, '') }))}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #d1d5db' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: '#475569' }}>Address</label>
+                    <input
+                      type="text"
+                      placeholder="City / Street"
+                      value={registerForm.address}
+                      onChange={e => setRegisterForm(prev => ({ ...prev, address: e.target.value }))}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #d1d5db' }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {registerForm.role === 'Hospital' && (
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '4px', color: '#374151' }}>Associated Hospital</label>
+                <select
+                  value={registerForm.hospital_id}
+                  onChange={e => setRegisterForm(prev => ({ ...prev, hospital_id: e.target.value }))}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+                >
+                  <option value="">Select an Existing Hospital (or None)</option>
+                  {hospitals.map(h => (
+                    <option key={h.HospitalID} value={h.HospitalID}>{h.HospitalName} ({h.Location})</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {registerForm.role === 'Admin' && (
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '4px', color: '#374151' }}>Associated Blood Bank</label>
+                <select
+                  value={registerForm.blood_bank_id}
+                  onChange={e => setRegisterForm(prev => ({ ...prev, blood_bank_id: e.target.value }))}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+                >
+                  <option value="">Select Blood Bank</option>
+                  {bloodBanks.map(b => (
+                    <option key={b.BloodBankID} value={b.BloodBankID}>{b.BloodBankName} ({b.Location})</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <button type="submit" className="button" disabled={loading} style={{ width: '100%', padding: '12px', fontSize: '0.95rem', fontWeight: 700 }}>
+              {loading ? 'Sending Verification Code...' : 'Send OTP to Email & Continue'}
+            </button>
+          </form>
+        ) : (
+          /* Register Step 2: OTP Verification */
+          <form onSubmit={handleVerifyRegisterOTP}>
+            <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px 14px', marginBottom: '18px', textAlign: 'center' }}>
+              <div style={{ fontSize: '0.85rem', color: '#166534', fontWeight: 600 }}>
+                Verification code sent to email!
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#15803d', marginTop: '4px' }}>
+                We sent a 6-digit code to <strong>{registerForm.email}</strong>. Please check your inbox (and spam folder) to verify.
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '20px', textAlign: 'center' }}>
+              <div style={{ fontSize: '0.85rem', color: '#4b5563', marginBottom: '10px' }}>
+                Enter the 6-digit code sent to <strong style={{ color: '#111827' }}>{registerForm.email}</strong>
+              </div>
+              <input
+                type="text"
+                maxLength={6}
+                value={registerOtp}
+                onChange={e => setRegisterOtp(e.target.value.replace(/\D/g, ''))}
+                placeholder="••••••"
+                required
+                autoFocus
+                style={{ width: '100%', maxWidth: '280px', margin: '0 auto', padding: '12px', fontSize: '1.6rem', fontWeight: 800, letterSpacing: '8px', textAlign: 'center', fontFamily: 'monospace', borderRadius: '8px', border: '2px solid #dc2626' }}
+              />
+            </div>
+
+            <button type="submit" className="button" disabled={loading || registerOtp.length !== 6} style={{ width: '100%', padding: '12px', fontSize: '1rem', fontWeight: 700, marginBottom: '14px' }}>
+              {loading ? 'Verifying...' : 'Verify Code & Complete Registration'}
+            </button>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <button
+                type="button"
+                onClick={handleResendRegisterOTP}
+                disabled={otpTimer > 0 || loading}
+                style={{ background: 'none', border: 'none', color: otpTimer > 0 ? '#9ca3af' : '#991b1b', fontSize: '0.85rem', fontWeight: 600, cursor: otpTimer > 0 ? 'default' : 'pointer' }}
+              >
+                {otpTimer > 0 ? `Resend OTP in ${otpTimer}s` : 'Resend Verification Code'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setRegisterStep('form'); setRegisterOtp(''); }}
+                style={{ background: 'none', border: 'none', color: '#4b5563', fontSize: '0.85rem', cursor: 'pointer' }}
+              >
+                ← Edit Information
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    );
+  };
+
+  // Auth Modal Component
+  const AuthModal = (
+    <div style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: 'rgba(0,0,0,0.6)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 2000,
+      padding: '20px'
+    }}>
+      {renderAuthForm(true)}
+    </div>
+  );
+
+  // Compute navigation tabs dynamically based on user role (strictly requires authentication)
+  const userRole = auth?.user?.role || null;
+  const dynamicTabs = useMemo(() => {
+    if (!userRole) {
+      return [];
+    }
+    if (userRole === 'Donor') {
+      return [
+        { id: 'donor-portal', label: 'Donor Portal' },
+        { id: 'network-map', label: 'Live Network Map' },
+        { id: 'dashboard', label: 'Statistics' },
+      ];
+    }
+    if (userRole === 'Hospital') {
+      return [
+        { id: 'requests', label: 'Emergency Requests' },
+        { id: 'network-map', label: 'Live Network Map' },
+        { id: 'patients', label: 'Patients' },
+        { id: 'dashboard', label: 'Statistics' },
+      ];
+    }
+    // Admin / SuperAdmin
+    return [
+      { id: 'dashboard', label: 'Dashboard' },
+      { id: 'network-map', label: 'Live Network Map' },
+      { id: 'donors', label: 'Donors' },
+      { id: 'patients', label: 'Patients' },
+      { id: 'requests', label: 'Requests' },
+      { id: 'management', label: 'Management' },
+      ...(auth?.user?.donor_id ? [{ id: 'donor-portal', label: 'Donor Portal' }] : []),
+    ];
+  }, [userRole, auth]);
+
   return (
     <div>
       {message && (
@@ -1903,39 +3004,76 @@ const BloodBankManagement = () => {
         </div>
       )}
 
+      {showAuthModal && AuthModal}
+
       <header className="header">
-        <div className="header-inner">
-          <Heart className="header-icon" fill="white" />
-          <span className="title">Blood Bank Management System</span>
+        <div className="header-inner" style={{ justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <Heart className="header-icon" fill="white" />
+            <div>
+              <span className="title">Blood Bank Management System</span>
+              <div style={{ fontSize: '13px', opacity: 0.85 }}>Enterprise Healthcare & Donor Allocation Network</div>
+            </div>
+          </div>
+
+          <div className="header-user">
+            {auth?.user ? (
+              <>
+                <span className={`role-badge ${auth.user.role.toLowerCase()}`}>
+                  <Shield size={12} /> {auth.user.role}
+                </span>
+                <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>{auth.user.name}</span>
+                <button className="btn-logout" onClick={handleLogout} title="Sign out">
+                  <LogOut size={14} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> Logout
+                </button>
+              </>
+            ) : (
+              <button className="btn-logout" onClick={() => setShowAuthModal(true)} style={{ background: '#fff', color: '#991b1b', fontWeight: 700 }}>
+                <LogIn size={14} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> Sign In / Demo Login
+              </button>
+            )}
+          </div>
         </div>
-        <div style={{ fontSize: '14px', opacity: 0.75 }}>Saving lives, one donation at a time</div>
       </header>
 
-      <div className="tabs">
-        {[
-          { id: 'dashboard', label: 'Dashboard' },
-          { id: 'donors', label: 'Donors' },
-          { id: 'patients', label: 'Patients' },
-          { id: 'requests', label: 'Requests' },
-          { id: 'management', label: 'Management' },
-        ].map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`tab-button${activeTab !== tab.id ? ' inactive' : ''}`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+      {!auth?.user ? (
+        /* Unauthenticated Gateway — Strictly prevents access to portals until signed in */
+        <div className="container" style={{ maxWidth: '640px', marginTop: '40px', marginBottom: '60px' }}>
+          {renderAuthForm(false)}
+        </div>
+      ) : (
+        <>
+          <div className="tabs">
+            {dynamicTabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`tab-button${activeTab !== tab.id ? ' inactive' : ''}`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
 
-      <div className="container">
-        {activeTab === 'dashboard' && <DashboardView />}
-        {activeTab === 'donors' && DonorsView}
-        {activeTab === 'patients' && PatientsView}
-        {activeTab === 'requests' && RequestsView}
-        {activeTab === 'management' && ManagementView}
-      </div>
+          <div className="container" style={activeTab === 'network-map' ? { maxWidth: '1240px', padding: '20px' } : {}}>
+            {activeTab === 'dashboard' && <DashboardView />}
+            {activeTab === 'network-map' && (
+              <LiveNetworkMap
+                donors={donors}
+                requests={requests}
+                bloodBanks={bloodBanks}
+                hospitals={hospitals}
+                currentUser={auth?.user}
+              />
+            )}
+            {activeTab === 'donor-portal' && DonorPortalView}
+            {activeTab === 'donors' && DonorsView}
+            {activeTab === 'patients' && PatientsView}
+            {activeTab === 'requests' && RequestsView}
+            {activeTab === 'management' && ManagementView}
+          </div>
+        </>
+      )}
     </div>
   );
 };

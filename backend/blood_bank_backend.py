@@ -1,3 +1,4 @@
+import os
 import mysql.connector
 from mysql.connector import Error
 from datetime import datetime, timedelta
@@ -5,12 +6,18 @@ from typing import List, Dict, Optional, Tuple
 
 
 class BloodBankDB:
-    def __init__(self, host='localhost', user='root', password='yourpassword', database='BloodBankDB'):
+    def __init__(
+        self,
+        host: Optional[str] = None,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
+        database: Optional[str] = None
+    ):
         """Initialize database connection"""
-        self.host = host
-        self.user = user
-        self.password = password
-        self.database = database
+        self.host = host or os.getenv('DB_HOST', 'localhost')
+        self.user = user or os.getenv('DB_USER', 'root')
+        self.password = password or os.getenv('DB_PASSWORD', 'Pes@2004')
+        self.database = database or os.getenv('DB_NAME', 'BloodBankDB')
         self.connection = None
 
     def connect(self) -> bool:
@@ -294,6 +301,12 @@ class BloodBankDB:
         query = "SELECT * FROM Hospital ORDER BY HospitalID"
         return self.fetch_query(query)
 
+    def get_hospital_by_id(self, hospital_id: int) -> Optional[Dict]:
+        """Get hospital details by ID"""
+        query = "SELECT * FROM Hospital WHERE HospitalID = %s"
+        results = self.fetch_query(query, (hospital_id,))
+        return results[0] if results else None
+
     # PATIENT OPERATIONS
     def add_patient(self, name: str, age: int, gender: str, blood_group: str,
                     hospital_id: int, contact: str, condition: str = None) -> Optional[int]:
@@ -375,10 +388,11 @@ class BloodBankDB:
                 cursor.close()
 
     def get_all_requests(self) -> List[Dict]:
-        """Get all requests with details"""
+        """Get all requests with patient, hospital, and blood bank details including locations"""
         query = """
-        SELECT r.*, p.PatientName, p.BloodGroupRequired, 
-               bb.BloodBankName, h.HospitalName
+        SELECT r.*, p.PatientName, p.BloodGroupRequired, p.ContactNo AS PatientContact,
+               bb.BloodBankName, bb.Location AS BloodBankLocation,
+               h.HospitalName, h.Location AS HospitalLocation, h.ContactNo AS HospitalContact
         FROM Request r
         JOIN Patient p ON r.PatientID = p.PatientID
         JOIN BloodBank bb ON r.BloodBankID = bb.BloodBankID
@@ -538,6 +552,56 @@ class BloodBankDB:
         stats['pending_requests'] = result[0]['total'] if result else 0
 
         return stats
+
+    def get_donor_by_email(self, email: str) -> Optional[Dict]:
+        """Fetch donor by email"""
+        query = "SELECT * FROM Donor WHERE Email = %s LIMIT 1"
+        result = self.fetch_query(query, (email,))
+        return result[0] if result else None
+
+    def get_donor_by_contact(self, contact: str) -> Optional[Dict]:
+        """Fetch donor by contact number"""
+        query = "SELECT * FROM Donor WHERE ContactNo = %s LIMIT 1"
+        result = self.fetch_query(query, (contact,))
+        return result[0] if result else None
+
+    def create_user(self, full_name: str, email: str, password_hash: str, role: str = 'Donor',
+                    donor_id: Optional[int] = None, hospital_id: Optional[int] = None, blood_bank_id: Optional[int] = None) -> Optional[int]:
+        """Create a new user for authentication"""
+        if not self.ensure_connection():
+            return None
+
+        query = """
+        INSERT INTO User (FullName, Email, PasswordHash, Role, DonorID, HospitalID, BloodBankID)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+        cursor = None
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute(query, (full_name, email, password_hash, role, donor_id, hospital_id, blood_bank_id))
+            self.connection.commit()
+            return cursor.lastrowid
+        except Error as e:
+            print(f"Error creating user: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return None
+        finally:
+            if cursor:
+                cursor.close()
+
+    def get_user_by_email(self, email: str) -> Optional[Dict]:
+        """Fetch user by email"""
+        query = "SELECT * FROM User WHERE Email = %s LIMIT 1"
+        result = self.fetch_query(query, (email,))
+        return result[0] if result else None
+
+    def get_user_by_id(self, user_id: int) -> Optional[Dict]:
+        """Fetch user by ID"""
+        query = "SELECT * FROM User WHERE UserID = %s LIMIT 1"
+        result = self.fetch_query(query, (user_id,))
+        return result[0] if result else None
+
 
 
 # Example usage

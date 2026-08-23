@@ -62,3 +62,7 @@ Thumbs.db
 # Python version managers
 .python-version
 
+# Executables
+*.exe
+cloudflared.exe
+
