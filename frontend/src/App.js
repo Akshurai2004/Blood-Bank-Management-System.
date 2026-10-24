@@ -1,14 +1,33 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Heart, Users, Building2, Droplet, AlertCircle, Shield, LogIn, LogOut, CheckCircle, Clock, Award, FileText, UserPlus, RefreshCw, MapPin, Compass } from 'lucide-react';
+import { Heart, Users, Building2, Droplet, AlertCircle, Shield, LogIn, LogOut, Award, RefreshCw } from 'lucide-react';
 import LiveNetworkMap from './LiveNetworkMap';
 import 'leaflet/dist/leaflet.css';
 
-const ENV_API_BASE = (process.env.REACT_APP_API_URL || '').trim().replace(/\/$/, '');
-const DEFAULT_API_BASE = process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api';
+const getApiBase = () => {
+  const envUrl = (process.env.REACT_APP_API_URL || '').trim();
+  if (envUrl) {
+    let clean = envUrl.replace(/\/+$/, '');
+    // If base URL was provided without '/api' suffix (e.g. https://xxx.onrender.com), append '/api'
+    if (!clean.endsWith('/api')) {
+      clean = clean + '/api';
+    }
+    return clean;
+  }
+  return process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api';
+};
+
+const API_BASE = getApiBase();
 
 const buildApiUrl = (path) => {
-  const base = ENV_API_BASE || DEFAULT_API_BASE;
-  return `${base}${path}`;
+  let cleanPath = (path || '').trim();
+  if (!cleanPath.startsWith('/')) {
+    cleanPath = '/' + cleanPath;
+  }
+  // Prevent duplicate /api/ if path already has /api prefix
+  if (API_BASE.endsWith('/api') && cleanPath.startsWith('/api/')) {
+    cleanPath = cleanPath.substring(4);
+  }
+  return `${API_BASE}${cleanPath}`;
 };
 
 

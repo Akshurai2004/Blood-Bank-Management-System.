@@ -87,30 +87,40 @@ def require_roles(allowed_roles: list[str]):
         return user
     return _role_checker
 
-# Initialize database outside of app so it can be accessed by lifespan
-DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_PASSWORD", "Pes@2004"),
-    "database": os.getenv("DB_NAME", "BloodBankDB"),
-}
-db = BloodBankDB(**DB_CONFIG)
+# Initialize database (reads DATABASE_URL / POSTGRES_URL / DB_* env variables automatically)
+db = BloodBankDB()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler to connect and disconnect DB"""
-    if not db.connect():
-        raise Exception("Failed to connect to database")
+    connected = db.connect()
+    if connected:
+        auto_init = os.getenv("AUTO_INIT_DB", "true").lower() in ("true", "1", "yes")
+        if auto_init:
+            try:
+                db.init_schema()
+            except Exception as e:
+                print(f"[STARTUP WARNING] Database auto-init note: {e}")
+    else:
+        print("[STARTUP WARNING] Could not connect to PostgreSQL at startup. Will retry on request.")
     yield
     db.disconnect()
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(title="Blood Bank Management API", version="2.0.0", lifespan=lifespan)
 
-# Add CORS middleware to allow React to connect
+# Configure CORS origins
+cors_env = os.getenv("CORS_ORIGINS", "*").strip()
+if cors_env == "*":
+    allow_origins = ["*"]
+else:
+    allow_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+
+# Add CORS middleware to allow React frontend (Vercel, Localhost, etc.) to connect
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allow_origins,
+    allow_origin_regex=os.getenv("CORS_ORIGIN_REGEX", r"https://.*\.vercel\.app"),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -252,6 +262,17 @@ class PatientUpdate(BaseModel):
 @app.get("/")
 async def root():
     return {"message": "Blood Bank Management API is running", "status": "healthy", "version": "2.0.0"}
+
+@app.get("/health")
+@app.get("/api/health")
+async def health_check():
+    db_info = db.get_connection_info()
+    return {
+        "status": "healthy",
+        "service": "Blood Bank Management API",
+        "version": "2.0.0",
+        "database": db_info
+    }
 
 
 # ==================== AUTHENTICATION ENDPOINTS ====================
@@ -995,4 +1016,7 @@ async def get_recent_notifications(limit: int = 15):
 
 # Run the server
 if __name__ == "__main__":
-    uvicorn.run("blood_bank_fastapi:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.getenv("PORT", os.getenv("BACKEND_PORT", 8000)))
+    host = os.getenv("BACKEND_HOST", "0.0.0.0")
+    print(f"[SERVER] Starting Blood Bank API on {host}:{port}...")
+    uvicorn.run("blood_bank_fastapi:app", host=host, port=port, reload=False)

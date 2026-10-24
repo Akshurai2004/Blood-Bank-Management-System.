@@ -33,6 +33,22 @@ class EmergencyMessageQueue:
             print("[MESSAGE QUEUE] Redis package not installed, using in-memory queue.")
             return
 
+        redis_url = os.getenv("REDIS_URL")
+        if redis_url:
+            try:
+                client = redis.from_url(
+                    redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=1.0,
+                    socket_timeout=1.0
+                )
+                if client.ping():
+                    self.redis_client = client
+                    print("[MESSAGE QUEUE] Successfully connected to Redis via REDIS_URL")
+                    return
+            except Exception as e:
+                print(f"[MESSAGE QUEUE] Redis connection via REDIS_URL failed ({e}). Falling back to host/port.")
+
         try:
             client = redis.Redis(
                 host=self.redis_host,

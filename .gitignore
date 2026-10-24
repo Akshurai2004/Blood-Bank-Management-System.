@@ -47,6 +47,8 @@ Thumbs.db
 # Environment variables / secrets
 .env
 .env.*
+!.env.example
+!frontend/.env.example
 
 # MySQL socket / runtime
 *.sqlite3
@@ -64,5 +66,3 @@ Thumbs.db
 
 # Executables
 *.exe
-cloudflared.exe
-

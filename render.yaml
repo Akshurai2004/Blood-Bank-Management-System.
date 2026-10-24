@@ -1,0 +1,46 @@
+services:
+  # =================================================================
+  # Blood Bank Management System - Backend Web Service (Render)
+  # =================================================================
+  - type: web
+    name: bloodbank-backend
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn backend.blood_bank_fastapi:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      # Allows your Vercel frontend and preview deployments to access the API
+      - key: CORS_ORIGINS
+        value: "*"
+      # Automatically initialize database schema and seed data on startup
+      - key: AUTO_INIT_DB
+        value: "true"
+      # =============================================================
+      # PostgreSQL Database Configuration
+      # Set DATABASE_URL from the Render PostgreSQL service.
+      # =============================================================
+      - key: DATABASE_URL
+        sync: false
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: "5432"
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        value: bloodbank
+      - key: DB_SSL
+        value: "true"
+      # Optional: Redis service or URL for emergency message queue
+      - key: REDIS_URL
+        sync: false
+      - key: REQUIRE_REAL_EMAIL
+        value: "false"
