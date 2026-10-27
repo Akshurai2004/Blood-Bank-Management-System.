@@ -5,6 +5,8 @@ import ssl
 import json
 import secrets
 import smtplib
+import urllib.error
+import urllib.request
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.utils import formatdate, make_msgid
@@ -81,6 +83,8 @@ def get_smtp_config() -> Dict[str, Any]:
 
     use_tls = os.getenv("SMTP_USE_TLS", "true").lower() in ("true", "1", "yes")
     require_real = os.getenv("REQUIRE_REAL_EMAIL", "false").lower() in ("true", "1", "yes")
+    resend_api_key = os.getenv("RESEND_API_KEY", "").strip()
+    email_from = os.getenv("EMAIL_FROM", "").strip() or from_addr
 
     is_configured = bool(host and user and password)
 
@@ -93,6 +97,8 @@ def get_smtp_config() -> Dict[str, Any]:
         "use_tls": use_tls,
         "require_real": require_real,
         "is_configured": is_configured,
+        "resend_api_key": resend_api_key,
+        "email_from": email_from,
     }
 
 
@@ -166,7 +172,45 @@ def send_otp_email(to_email: str, otp_code: str, user_name: str = "User", purpos
     cfg = get_smtp_config()
     action_name = "Registration" if purpose == "registration" else "Login"
     subject = f"Your Blood Bank Verification Code: {otp_code} ({action_name})"
-    
+
+    # HTTPS email APIs work in hosts that restrict outbound SMTP ports.
+    if cfg["resend_api_key"]:
+        try:
+            payload = json.dumps({
+                "from": cfg["email_from"],
+                "to": [to_email],
+                "subject": subject,
+                "text": (
+                    f"Hello {user_name},\n\nYour verification code is: {otp_code}\n"
+                    "Valid for 10 minutes.\n\nBlood Bank System"
+                ),
+                "html": build_otp_email_html(otp_code, user_name, purpose),
+            }).encode("utf-8")
+            request = urllib.request.Request(
+                "https://api.resend.com/emails",
+                data=payload,
+                headers={
+                    "Authorization": "Bearer " + cfg["resend_api_key"],
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=15) as response:
+                if response.status < 200 or response.status >= 300:
+                    raise RuntimeError(f"Resend returned HTTP {response.status}")
+            print(f"[EMAIL SERVICE] HTTPS email successfully sent to {to_email} (Subject: {subject})")
+            return True, f"Verification code sent to {to_email}. Please check your inbox."
+        except urllib.error.HTTPError as err:
+            error_msg = f"HTTPS email delivery failed with HTTP {err.code}."
+            print(f"[EMAIL SERVICE ERROR] {error_msg}")
+            if cfg["require_real"]:
+                return False, error_msg
+        except Exception as err:
+            error_msg = f"HTTPS email delivery failed: {err}"
+            print(f"[EMAIL SERVICE ERROR] {error_msg}")
+            if cfg["require_real"]:
+                return False, error_msg
+
     # Try real SMTP if configured
     if cfg["is_configured"]:
         try:
@@ -298,6 +342,8 @@ class OTPService:
         cls._save_record(clean_email, record, ttl_seconds=cls.EXPIRY_SECONDS)
 
         success, msg = send_otp_email(clean_email, otp_code, user_name, purpose="registration")
+        if not success:
+            cls._delete_record(clean_email)
         return success, msg
 
     @classmethod
@@ -329,6 +375,8 @@ class OTPService:
         cls._save_record(clean_email, record, ttl_seconds=cls.EXPIRY_SECONDS)
 
         success, msg = send_otp_email(clean_email, otp_code, user_name, purpose="login")
+        if not success:
+            cls._delete_record(clean_email)
         return success, msg
 
     @classmethod

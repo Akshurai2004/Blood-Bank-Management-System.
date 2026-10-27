@@ -42,5 +42,10 @@ services:
       # Optional: Redis service or URL for emergency message queue
       - key: REDIS_URL
         sync: false
+      # Use an HTTPS email provider because outbound SMTP may be blocked.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
       - key: REQUIRE_REAL_EMAIL
-        value: "false"
+        value: "true"

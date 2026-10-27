@@ -294,7 +294,8 @@ async def send_registration_otp(req: SendRegistrationOTPRequest):
     payload = req.model_dump()
     success, msg = OTPService.create_registration_otp(clean_email, payload)
     if not success:
-        raise HTTPException(status_code=429, detail=msg)
+        status_code = 429 if msg.startswith("Please wait") else 503
+        raise HTTPException(status_code=status_code, detail=msg)
     
     return {
         "success": True,
@@ -380,7 +381,8 @@ async def send_login_otp(req: SendLoginOTPRequest):
     
     success, msg = OTPService.create_login_otp(clean_email, user["FullName"])
     if not success:
-        raise HTTPException(status_code=429, detail=msg)
+        status_code = 429 if msg.startswith("Please wait") else 503
+        raise HTTPException(status_code=status_code, detail=msg)
     
     return {
         "success": True,
