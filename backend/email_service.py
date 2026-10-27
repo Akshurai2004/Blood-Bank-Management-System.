@@ -201,7 +201,15 @@ def send_otp_email(to_email: str, otp_code: str, user_name: str = "User", purpos
             print(f"[EMAIL SERVICE] HTTPS email successfully sent to {to_email} (Subject: {subject})")
             return True, f"Verification code sent to {to_email}. Please check your inbox."
         except urllib.error.HTTPError as err:
-            error_msg = f"HTTPS email delivery failed with HTTP {err.code}."
+            provider_detail = ""
+            try:
+                response_body = err.read().decode("utf-8", errors="replace")
+                response_data = json.loads(response_body)
+                provider_detail = response_data.get("message") or response_data.get("name") or ""
+            except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+                pass
+            detail_suffix = f": {provider_detail}" if provider_detail else ""
+            error_msg = f"HTTPS email delivery failed with HTTP {err.code}{detail_suffix}"
             print(f"[EMAIL SERVICE ERROR] {error_msg}")
             if cfg["require_real"]:
                 return False, error_msg
