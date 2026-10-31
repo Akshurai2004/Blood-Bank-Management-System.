@@ -96,6 +96,33 @@ def get_smtp_config() -> Dict[str, Any]:
     }
 
 
+
+
+def get_resend_config() -> Dict[str, Any]:
+    """Dynamically read Resend (fallback) configuration from environment variables."""
+    try:
+        from dotenv import load_dotenv
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        for env_candidate in [
+            os.path.join(base_dir, ".env"),
+            os.path.join(base_dir, "..", ".env"),
+            ".env",
+        ]:
+            if os.path.isfile(env_candidate):
+                load_dotenv(dotenv_path=env_candidate, override=False)
+    except Exception:
+        pass
+
+    api_key = os.getenv("RESEND_API_KEY", "").strip()
+    from_addr = os.getenv("EMAIL_FROM", "").strip() or "Blood Bank Management <onboarding@resend.dev>"
+    is_configured = bool(api_key)
+
+    return {
+        "api_key": api_key,
+        "from_addr": from_addr,
+        "is_configured": is_configured,
+    }
+
 def generate_otp(length: int = 6) -> str:
     """Generate a secure numeric OTP of given length."""
     return "".join(secrets.choice("0123456789") for _ in range(length))
@@ -158,16 +185,84 @@ def build_otp_email_html(otp_code: str, user_name: str, purpose: str = "registra
 """
 
 
+
+
+def _log_otp_code(to_email: str, user_name: str, subject: str, purpose: str, otp_code: str) -> None:
+    """Print the OTP code block to the backend server logs (always, exactly once per call)."""
+    try:
+        print("\n" + "=" * 65)
+        print("[EMAIL SERVICE - DISPATCH TO INBOX / SERVER LOGS]")
+        print(f"To: {to_email} ({user_name})")
+        print(f"Subject: {subject}")
+        print(f"Action: {purpose.upper()}")
+        print(f"VERIFICATION OTP CODE: >>> {otp_code} <<<")
+        print("Validity: 10 Minutes")
+        print("Note: To deliver emails directly to real inboxes, configure SMTP/Resend in .env")
+        print("=" * 65 + "\n")
+    except Exception:
+        pass
+
+
+def _send_via_resend(cfg_resend: Dict[str, Any], to_email: str, subject: str, text_content: str, html_content: str) -> Tuple[bool, str]:
+    """Send an email via the Resend HTTP API. Returns (success, error_message). Never raises."""
+    import urllib.request
+    import urllib.error
+
+    payload = json.dumps({
+        "from": cfg_resend["from_addr"],
+        "to": [to_email],
+        "subject": subject,
+        "text": text_content,
+        "html": html_content,
+    }).encode("utf-8")
+
+    request = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {cfg_resend['api_key']}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if 200 <= response.status < 300:
+                return True, ""
+            body = response.read().decode("utf-8", errors="ignore")
+            return False, f"Resend HTTP {response.status}: {body}"
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        return False, f"Resend HTTP {e.code}: {body}"
+    except Exception as e:
+        return False, f"Resend request failed: {e}"
+
 def send_otp_email(to_email: str, otp_code: str, user_name: str = "User", purpose: str = "registration") -> Tuple[bool, str]:
     """
-    Send OTP verification email via SMTP if configured, or console/log simulation in local dev.
+    Send OTP verification email.
+
+    Flow: try SMTP first, fall back to Resend on failure, and ALWAYS print
+    the OTP code to the backend server logs exactly once regardless of outcome.
     Returns (success, message).
     """
     cfg = get_smtp_config()
+    cfg_resend = get_resend_config()
     action_name = "Registration" if purpose == "registration" else "Login"
     subject = f"Your Blood Bank Verification Code: {otp_code} ({action_name})"
-    
-    # Try real SMTP if configured
+
+    text_content = f"Hello {user_name},\n\nYour verification code is: {otp_code}\nValid for 10 minutes.\n\nBlood Bank System"
+    html_content = build_otp_email_html(otp_code, user_name, purpose)
+
+    errors = []
+    delivered = False
+    delivered_via = ""
+
+    # --- Provider 1: SMTP (primary) ---
     if cfg["is_configured"]:
         try:
             msg = MIMEMultipart("alternative")
@@ -177,55 +272,56 @@ def send_otp_email(to_email: str, otp_code: str, user_name: str = "User", purpos
             msg["Date"] = formatdate(localtime=True)
             msg["Message-ID"] = make_msgid(domain="bloodbank.org")
 
-            text_content = f"Hello {user_name},\n\nYour verification code is: {otp_code}\nValid for 10 minutes.\n\nBlood Bank System"
-            html_content = build_otp_email_html(otp_code, user_name, purpose)
-
             msg.attach(MIMEText(text_content, "plain"))
             msg.attach(MIMEText(html_content, "html"))
 
             context = ssl.create_default_context()
 
             if cfg["port"] == 465:
-                # SSL direct connection
                 with smtplib.SMTP_SSL(cfg["host"], cfg["port"], context=context, timeout=15) as server:
                     server.login(cfg["user"], cfg["password"])
                     server.sendmail(cfg["from_addr"], [to_email], msg.as_string())
             else:
-                # STARTTLS connection (standard 587 or 25)
                 with smtplib.SMTP(cfg["host"], cfg["port"], timeout=15) as server:
                     if cfg["use_tls"]:
                         server.starttls(context=context)
                     server.login(cfg["user"], cfg["password"])
                     server.sendmail(cfg["from_addr"], [to_email], msg.as_string())
 
+            delivered = True
+            delivered_via = "SMTP"
             print(f"[EMAIL SERVICE] Real SMTP email successfully sent to {to_email} (Subject: {subject})")
-            return True, f"Verification code sent to {to_email}. Please check your inbox."
         except smtplib.SMTPAuthenticationError as auth_err:
-            error_msg = f"SMTP Authentication failed: {auth_err}. Please check your SMTP credentials in .env"
-            print(f"[EMAIL SERVICE ERROR] {error_msg}")
-            if cfg["require_real"]:
-                return False, error_msg
+            errors.append(f"SMTP Authentication failed: {auth_err}")
+            print(f"[EMAIL SERVICE ERROR] SMTP Authentication failed: {auth_err}. Please check your SMTP credentials in .env")
         except Exception as err:
-            error_msg = f"SMTP delivery failed: {err}"
-            print(f"[EMAIL SERVICE ERROR] {error_msg}")
-            if cfg["require_real"]:
-                return False, error_msg
-    
-    # Development / Offline mode fallback (only when SMTP is not configured)
-    try:
-        print("\n" + "=" * 65)
-        print("[EMAIL SERVICE - DISPATCH TO INBOX / SERVER LOGS]")
-        print(f"To: {to_email} ({user_name})")
-        print(f"Subject: {subject}")
-        print(f"Action: {purpose.upper()}")
-        print(f"VERIFICATION OTP CODE: >>> {otp_code} <<<")
-        print(f"Validity: 10 Minutes")
-        print("Note: To deliver emails directly to real inboxes, configure SMTP in .env")
-        print("=" * 65 + "\n")
-    except Exception:
-        pass
-    
+            errors.append(f"SMTP delivery failed: {err}")
+            print(f"[EMAIL SERVICE ERROR] SMTP delivery failed: {err}")
+
+    # --- Provider 2: Resend (fallback, only if SMTP did not deliver) ---
+    if not delivered and cfg_resend["is_configured"]:
+        ok, err = _send_via_resend(cfg_resend, to_email, subject, text_content, html_content)
+        if ok:
+            delivered = True
+            delivered_via = "Resend"
+            print(f"[EMAIL SERVICE] Real email successfully sent to {to_email} via Resend (Subject: {subject})")
+        else:
+            errors.append(err)
+            print(f"[EMAIL SERVICE ERROR] {err}")
+
+    # --- ALWAYS print the OTP code to the backend server logs (exactly once) ---
+    _log_otp_code(to_email, user_name, subject, purpose, otp_code)
+
+    # --- Decide return value ---
+    if delivered:
+        return True, f"Verification code sent to {to_email}. Please check your inbox."
+
+    if errors and cfg["require_real"]:
+        return False, "All email providers failed: " + "; ".join(errors)
+
     return True, f"Verification code sent to {to_email}. Please check your email."
+
+
 
 
 class OTPService:
